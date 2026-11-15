@@ -375,6 +375,9 @@ export async function deleteListing(actor: Actor | null, rawId: string): Promise
   const id = uuidOr404(rawId);
   await db().transaction(async (tx) => {
     await lockAgent(tx, actor);
+    // The agent's write allowance is locked before any listing or inquiry row, the same order as updateInquiryStatus
+    // (the delete cascades to the listing's inquiries), so the two can't deadlock.
+    await advisoryLock(tx, `rate:api_write:${actor.id}`);
     const [row] = await tx
       .select({ status: L.status })
       .from(L)

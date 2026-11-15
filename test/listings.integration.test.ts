@@ -312,6 +312,27 @@ describe.skipIf(!url)("listings, favorites and inquiries (Postgres)", () => {
     });
   });
 
+  describe("lock order", () => {
+    it("an inquiry status change racing the deletion of its listing never deadlocks", async () => {
+      const racer = await makeUser(sql, P, "lockracer", "agent");
+      const buyers = await makeUser(sql, P, "lockbuyer", "user");
+      for (let i = 0; i < 15; i++) {
+        const l = (await L.createListing(racer, facts({ title: `lock ${i}` }))).listing;
+        await addPhoto(sql, l.id);
+        const live = await L.updateListing(racer, l.id, { version: 1, status: "active" });
+        const [{ id: inquiryId }] = await sql`insert into inquiry (listing_id, buyer_id, message, client_op_id) values (${l.id}, ${buyers.id}, 'hi', gen_random_uuid()) returning id`;
+        await L.updateListing(racer, l.id, { version: live.version, status: "withdrawn" });
+        const results = await Promise.allSettled([I.updateInquiryStatus(racer, inquiryId, { status: "contacted" }), L.deleteListing(racer, l.id)]);
+        for (const r of results) {
+          // Each either finishes or is refused with a normal 404 (the other won); a deadlock would surface as a status-less error.
+          if (r.status === "rejected") expect(r.reason).toMatchObject({ status: 404 });
+        }
+        expect(await sql`select 1 from listing where id = ${l.id}`).toHaveLength(0);
+        await sql`delete from rate_event where user_id = ${racer.id}`;
+      }
+    });
+  });
+
   describe("favorites and inquiries limits", () => {
     let live: { id: string };
     beforeAll(async () => {

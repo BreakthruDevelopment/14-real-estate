@@ -101,6 +101,9 @@ export async function updateInquiryStatus(actor: Actor | null, rawId: string, in
   const { status } = inquiryStatusInput.parse(input);
   return db().transaction(async (tx) => {
     await lockAgent(tx, actor);
+    // Same order as deleteListing (agent's write allowance, then the rows it touches), so the two never deadlock:
+    // take the allowance's lock first, even though a no-op change won't spend it.
+    await advisoryLock(tx, `rate:api_write:${actor.id}`);
     const [row] = await tx
       .select({ id: I.id, listingId: I.listingId, buyerId: I.buyerId, status: I.status })
       .from(I)
