@@ -4,8 +4,9 @@ import { assertCan } from "@/lib/access";
 import { type Actor, toRole } from "@/lib/auth/rbac";
 import { db, schema } from "@/lib/db";
 import { ConflictError, NotFoundError } from "@/lib/errors";
-import { AGENT_REVOKED, roleInput } from "@/lib/listing-schema";
+import { AGENT_REVOKED, LIMITS, roleInput } from "@/lib/listing-schema";
 import { log } from "@/lib/log";
+import { consumeRate } from "@/lib/usage";
 
 export type RoleChange = { userId: string; role: "user" | "agent"; changed: boolean; hidden: number; unhidden: number };
 
@@ -35,6 +36,8 @@ export async function setUserRole(actor: Actor | null, input: unknown): Promise<
     if (previous === "admin") throw new ConflictError("An admin's role can't be changed here.");
     if (previous === role) return { userId, role, changed: false, hidden: 0, unhidden: 0 };
 
+    // A real change costs the acting admin one write from the hourly allowance (it holds locks that block the agent's writes).
+    await consumeRate(tx, actor.id, "api_write", LIMITS.writesPerHour, "Too many changes this hour. Try again later.");
     await tx.update(schema.user).set({ role, updatedAt: new Date() }).where(eq(schema.user.id, userId));
 
     const L = schema.listing;

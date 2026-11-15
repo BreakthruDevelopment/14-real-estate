@@ -265,6 +265,22 @@ describe.skipIf(!url)("access rules (Postgres)", () => {
     });
   });
 
+  describe("admin writes are rate-limited too", () => {
+    it("role changes and hides cost the admin an api_write each, and stop at 300 an hour", async () => {
+      const busy = await makeUser(sql, P, "busyadmin", "admin");
+      const ag = await makeUser(sql, P, "ratedagent", "agent");
+      const l = await makeActive(ag, { title: "Rate" });
+      await sql`insert into rate_event (user_id, kind) select ${busy.id}, 'api_write' from generate_series(1, 300)`;
+      await expect(R.setUserRole(busy, { userId: ag.id, role: "user" })).rejects.toMatchObject({ status: 429 });
+      expect((await sql`select role from "user" where id = ${ag.id}`)[0].role).toBe("agent"); // rolled back
+      await expect(A.hideListing(busy, l.id, { hidden: true, reason: "spam" })).rejects.toMatchObject({ status: 429 });
+      expect((await sql`select hidden_at from listing where id = ${l.id}`)[0].hidden_at).toBeNull();
+      // A no-op costs nothing.
+      await expect(R.setUserRole(busy, { userId: ag.id, role: "agent" })).resolves.toMatchObject({ changed: false });
+      await expect(A.hideListing(busy, l.id, { hidden: false })).resolves.toMatchObject({ changed: false });
+    });
+  });
+
   describe("revoking and granting the agent role", () => {
     it("revoking hides the agent's active and pending listings (not drafts); an admin-hidden one keeps its reason; re-granting unhides only the revoked ones", async () => {
       const ag = await makeUser(sql, P, "revokee", "agent");

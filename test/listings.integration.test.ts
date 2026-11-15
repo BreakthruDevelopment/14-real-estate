@@ -332,6 +332,17 @@ describe.skipIf(!url)("listings, favorites and inquiries (Postgres)", () => {
       await expect(F.listFavorites(fan)).resolves.toHaveLength(200);
     });
 
+    it("removing a favorite costs a write only when something is removed, and stops at the hourly limit", async () => {
+      const b = await makeUser(sql, P, "favrate", "user");
+      await F.addFavorite(b, live.id);
+      await sql`insert into rate_event (user_id, kind) select ${b.id}, 'api_write' from generate_series(1, 299)`; // add used 1 of 300
+      await expect(F.removeFavorite(b, live.id)).rejects.toMatchObject({ status: 429 });
+      expect(await F.listFavorites(b)).toHaveLength(1); // the delete was rolled back
+      await sql`delete from rate_event where user_id = ${b.id}`;
+      await expect(F.removeFavorite(b, live.id)).resolves.toEqual({ removed: true });
+      await expect(F.removeFavorite(b, live.id)).resolves.toEqual({ removed: false });
+    });
+
     it("an inquiry is idempotent per buyer and client op id, and a buyer has one open inquiry per listing", async () => {
       const b = await makeUser(sql, P, "inq1", "user");
       const clientOpId = crypto.randomUUID();

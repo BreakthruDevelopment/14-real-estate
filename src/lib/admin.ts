@@ -4,11 +4,12 @@ import { assertCan, uuidOr404 } from "@/lib/access";
 import { type Actor, toRole } from "@/lib/auth/rbac";
 import { db, schema } from "@/lib/db";
 import { ConflictError, NotFoundError } from "@/lib/errors";
-import { AGENT_REVOKED, hideInput } from "@/lib/listing-schema";
+import { AGENT_REVOKED, LIMITS, hideInput } from "@/lib/listing-schema";
 import { env } from "@/lib/env";
 import { log } from "@/lib/log";
-import { dailyCount } from "@/lib/usage";
+import { consumeRate, dailyCount } from "@/lib/usage";
 
+const TOO_MANY = "Too many changes this hour. Try again later.";
 const MB = 1024 * 1024;
 const GB = 1024 * MB;
 /** The /admin banner: the shared Postgres server turns read-only at about 95% storage; warn from 70%. */
@@ -101,6 +102,7 @@ export async function hideListing(actor: Actor | null, rawId: string, input: unk
     if (hidden) {
       if (row.status !== "active" && row.status !== "pending") throw new ConflictError("Only an active or pending listing can be hidden.");
       if (row.hiddenAt && row.hiddenReason !== AGENT_REVOKED) return { id, hidden: true, changed: false };
+      await consumeRate(tx, actor.id, "api_write", LIMITS.writesPerHour, TOO_MANY);
       await tx.update(L).set({ hiddenAt: row.hiddenAt ?? new Date(), hiddenReason: reason }).where(eq(L.id, id));
       return { id, hidden: true, changed: true };
     }
@@ -108,6 +110,7 @@ export async function hideListing(actor: Actor | null, rawId: string, input: unk
     if (row.hiddenReason === AGENT_REVOKED) throw new ConflictError("Hidden because the agent's role was revoked. Grant the agent role again to unhide it.");
     // Never expose a listing whose agent is no longer an agent.
     if (!agent || toRole(agent.role) !== "agent") throw new ConflictError("This listing's owner is no longer an agent.");
+    await consumeRate(tx, actor.id, "api_write", LIMITS.writesPerHour, TOO_MANY);
     await tx.update(L).set({ hiddenAt: null, hiddenReason: null }).where(eq(L.id, id));
     return { id, hidden: false, changed: true };
   });

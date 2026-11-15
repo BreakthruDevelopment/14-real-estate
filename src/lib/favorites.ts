@@ -37,11 +37,17 @@ export async function addFavorite(actor: Actor | null, rawListingId: string): Pr
 export async function removeFavorite(actor: Actor | null, rawListingId: string): Promise<{ removed: boolean }> {
   assertCan(actor, "favorite:manage");
   const listingId = uuidOr404(rawListingId);
-  const rows = await db()
-    .delete(schema.favorite)
-    .where(and(eq(schema.favorite.userId, actor.id), eq(schema.favorite.listingId, listingId)))
-    .returning({ listingId: schema.favorite.listingId });
-  return { removed: rows.length > 0 };
+  // Deleting counts against the same hourly write allowance as adding, but only when something is actually removed;
+  // over the limit, the 429 rolls the delete back.
+  return db().transaction(async (tx) => {
+    const rows = await tx
+      .delete(schema.favorite)
+      .where(and(eq(schema.favorite.userId, actor.id), eq(schema.favorite.listingId, listingId)))
+      .returning({ listingId: schema.favorite.listingId });
+    if (rows.length === 0) return { removed: false };
+    await consumeRate(tx, actor.id, "api_write", LIMITS.writesPerHour, "Too many changes this hour. Try again later.");
+    return { removed: true };
+  });
 }
 
 /** The buyer's favorites that are still public, newest first. Hidden, draft and withdrawn listings drop out of the list. */
