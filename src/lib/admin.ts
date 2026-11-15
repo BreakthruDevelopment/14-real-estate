@@ -1,5 +1,5 @@
 import "server-only";
-import { and, count, eq, sql } from "drizzle-orm";
+import { count, eq, sql } from "drizzle-orm";
 import { assertCan, uuidOr404 } from "@/lib/access";
 import { type Actor, toRole } from "@/lib/auth/rbac";
 import { db, schema } from "@/lib/db";
@@ -86,8 +86,14 @@ export async function hideListing(actor: Actor | null, rawId: string, input: unk
   const { hidden, reason } = hideInput.parse(input);
   const L = schema.listing;
   const result = await db().transaction(async (tx) => {
+    // Lock order is user row, then listing row, the same as setUserRole (which locks the user FOR UPDATE and then
+    // updates listings). Reading the owner's role under a FOR SHARE lock also means an unhide can't race a revoke:
+    // either the revoke committed first (we see `user` and refuse) or it waits for us and then hides the listing.
+    const [owner] = await tx.select({ agentId: L.agentId }).from(L).where(eq(L.id, id));
+    if (!owner) throw new NotFoundError();
+    const [agent] = await tx.select({ role: schema.user.role }).from(schema.user).where(eq(schema.user.id, owner.agentId)).for("share");
     const [row] = await tx
-      .select({ id: L.id, agentId: L.agentId, status: L.status, hiddenAt: L.hiddenAt, hiddenReason: L.hiddenReason })
+      .select({ id: L.id, status: L.status, hiddenAt: L.hiddenAt, hiddenReason: L.hiddenReason })
       .from(L)
       .where(eq(L.id, id))
       .for("update");
@@ -101,7 +107,6 @@ export async function hideListing(actor: Actor | null, rawId: string, input: unk
     if (!row.hiddenAt) return { id, hidden: false, changed: false };
     if (row.hiddenReason === AGENT_REVOKED) throw new ConflictError("Hidden because the agent's role was revoked. Grant the agent role again to unhide it.");
     // Never expose a listing whose agent is no longer an agent.
-    const [agent] = await tx.select({ role: schema.user.role }).from(schema.user).where(and(eq(schema.user.id, row.agentId)));
     if (!agent || toRole(agent.role) !== "agent") throw new ConflictError("This listing's owner is no longer an agent.");
     await tx.update(L).set({ hiddenAt: null, hiddenReason: null }).where(eq(L.id, id));
     return { id, hidden: false, changed: true };

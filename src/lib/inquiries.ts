@@ -109,6 +109,7 @@ export async function updateInquiryStatus(actor: Actor | null, rawId: string, in
       .for("update", { of: I });
     if (!row) throw new NotFoundError();
     if (row.status === status) return { id, status };
+    await consumeRate(tx, actor.id, "api_write", LIMITS.writesPerHour, "Too many changes this hour. Try again later.");
     if (status === "open") {
       // Reopening would break "one open inquiry per buyer per listing" if the buyer has written again since.
       const [other] = await tx

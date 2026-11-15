@@ -312,6 +312,22 @@ describe.skipIf(!url)("access rules (Postgres)", () => {
       await expect(A.hideListing(admin, l.id, { hidden: false })).rejects.toMatchObject({ status: 409 });
     });
 
+    it("an admin unhide racing a revoke never leaves a public listing owned by a non-agent", async () => {
+      for (let i = 0; i < 12; i++) {
+        const ag = await makeUser(sql, P, `unhide${i}`, "agent");
+        const l = await makeActive(ag, { title: `Unhide race ${i}` });
+        await A.hideListing(admin, l.id, { hidden: true, reason: "review" });
+        const results = await Promise.allSettled([A.hideListing(admin, l.id, { hidden: false }), R.setUserRole(admin, { userId: ag.id, role: "user" })]);
+        expect(results[1]).toMatchObject({ status: "fulfilled" }); // no deadlock, the revoke always lands
+        if (results[0].status === "rejected") expect(results[0].reason).toMatchObject({ status: 409 });
+        const [row] = await sql`select l.hidden_at, u.role from listing l join "user" u on u.id = l.agent_id where l.id = ${l.id}`;
+        expect(row.role).toBe("user");
+        // The invariant: a listing whose owner is not an agent is hidden.
+        expect(row.hidden_at).not.toBeNull();
+        await expect(L.getListing(null, l.id)).rejects.toMatchObject({ status: 404 });
+      }
+    });
+
     it("the role write and the hide are one transaction: revoke and grant race a write without leaving a half state", async () => {
       const ag = await makeUser(sql, P, "racer", "agent");
       const l = await makeActive(ag, { title: "Race" });

@@ -184,8 +184,9 @@ export async function createListing(actor: Actor | null, input: unknown): Promis
   const data = newListingInput.parse(input);
   const { id, created } = await db().transaction(async (tx) => {
     await lockAgent(tx, actor);
-    // One create at a time per agent: makes the replay check below, and the cap counts, exact.
-    await advisoryLock(tx, `listing-create:${actor.id}`);
+    // One create at a time, app-wide: makes the replay check below and both cap counts exact (the 5,000 cap spans
+    // agents). Creating a listing is rare and the transaction short, so the single lock costs nothing.
+    await advisoryLock(tx, "listing-create");
     const [existing] = await tx
       .select({ id: L.id })
       .from(L)

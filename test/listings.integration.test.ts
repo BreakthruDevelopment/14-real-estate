@@ -134,6 +134,21 @@ describe.skipIf(!url)("listings, favorites and inquiries (Postgres)", () => {
       await expect(L.createListing(capAgent, facts())).resolves.toMatchObject({ created: true });
     });
 
+    it("stops at 5,000 listings app-wide, even when two different agents create at the same moment", async () => {
+      const a = await makeUser(sql, P, "globalcap1", "agent");
+      const b = await makeUser(sql, P, "globalcap2", "agent");
+      const filler = await makeUser(sql, P, "globalfill", "agent");
+      const [{ n }] = await sql`select count(*)::int as n from listing`;
+      await sql`
+        insert into listing (agent_id, title, property_type, price_usd, beds, baths, address_line, city, state, zip)
+        select ${filler.id}, 'cap ' || g, 'house', 100000, 2, 1, '1 St', 'Austin', 'TX', '78704' from generate_series(1, ${4999 - n}::int) g`;
+      const results = await Promise.allSettled([L.createListing(a, facts()), L.createListing(b, facts())]);
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      expect(results.find((r) => r.status === "rejected")).toMatchObject({ reason: { status: 409 } });
+      expect((await sql`select count(*)::int as n from listing`)[0].n).toBe(5000);
+      await sql`delete from listing where agent_id = ${filler.id}`;
+    });
+
     it("limits writes to 300 an hour per agent (api_write)", async () => {
       const rate = await makeUser(sql, P, "rateagent", "agent");
       await sql`insert into rate_event (user_id, kind) select ${rate.id}, 'api_write' from generate_series(1, 300)`;
@@ -336,6 +351,17 @@ describe.skipIf(!url)("listings, favorites and inquiries (Postgres)", () => {
       await addPhoto(sql, other.id);
       await L.updateListing(agent, other.id, { version: 1, status: "active" });
       await expect(I.createInquiry(b, { listingId: other.id, message: "x", clientOpId })).rejects.toMatchObject({ status: 409 });
+    });
+
+    it("limits an agent's inquiry status changes to the 300 writes an hour too", async () => {
+      const b = await makeUser(sql, P, "inq5", "user");
+      const { inquiry } = await I.createInquiry(b, { listingId: live.id, message: "hello", clientOpId: crypto.randomUUID() });
+      await sql`insert into rate_event (user_id, kind) select ${agent.id}, 'api_write' from generate_series(1, 300)`;
+      await expect(I.updateInquiryStatus(agent, inquiry.id, { status: "contacted" })).rejects.toMatchObject({ status: 429 });
+      expect((await sql`select status from inquiry where id = ${inquiry.id}`)[0].status).toBe("open");
+      // Setting the status it already has is not a write.
+      await expect(I.updateInquiryStatus(agent, inquiry.id, { status: "open" })).resolves.toMatchObject({ status: "open" });
+      await sql`delete from rate_event where user_id = ${agent.id}`;
     });
 
     it("validates the message: required, at most 1,000 characters, no NUL byte (400)", async () => {
