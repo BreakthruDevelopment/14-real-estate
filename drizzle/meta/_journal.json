@@ -29,6 +29,27 @@
       "when": 1794547046555,
       "tag": "0003_item-client-op-id",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794778743644,
+      "tag": "0004_enable-pgvector",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794778881965,
+      "tag": "0005_listings-roles-photos",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794778896149,
+      "tag": "0006_photo-blob-storage",
+      "breakpoints": true
     }
   ]
 }

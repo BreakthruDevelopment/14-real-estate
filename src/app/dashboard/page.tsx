@@ -1,104 +1,32 @@
 import type { Metadata } from "next";
-import { type Column, DataList, FilterBar, PageIntro, Panel, StatGrid, StatTile, buttonDanger } from "@/components/ui";
+import Link from "next/link";
+import { PageIntro, Panel, buttonSecondary } from "@/components/ui";
 import { requireUserOrRedirect } from "@/lib/auth/session";
-import { listItems } from "@/lib/items";
-import { deleteItemAction } from "./actions";
-import { AddItemForm, SummaryPanel } from "./client";
 
 export const metadata: Metadata = { title: "Dashboard" };
 export const dynamic = "force-dynamic";
 
-type Item = Awaited<ReturnType<typeof listItems>>[number];
+const roleLabel = { user: "Buyer", agent: "Agent", admin: "Admin" } as const;
 
-const sorts = [
-  { value: "newest", label: "Newest first" },
-  { value: "oldest", label: "Oldest first" },
-  { value: "title", label: "Title A to Z" },
-];
-
-const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? "";
-
-export default async function DashboardPage({ searchParams }: PageProps<"/dashboard">) {
+/** Placeholder until the UI slices (14.7 to 14.9) add the agent, account and admin pages. */
+export default async function DashboardPage() {
   const user = await requireUserOrRedirect();
-  const all = await listItems(user);
-
-  const sp = await searchParams;
-  const q = one(sp.q).trim().slice(0, 100);
-  const sort = sorts.some((s) => s.value === one(sp.sort)) ? one(sp.sort) : "newest";
-  const view = one(sp.view) === "cards" ? "cards" : "table";
-
-  const items = all
-    .filter((i) => !q || `${i.title} ${i.body}`.toLowerCase().includes(q.toLowerCase()))
-    .sort((a, b) =>
-      sort === "title"
-        ? a.title.localeCompare(b.title)
-        : sort === "oldest"
-          ? a.createdAt.getTime() - b.createdAt.getTime()
-          : b.createdAt.getTime() - a.createdAt.getTime(),
-    );
-
-  const columns: Column<Item>[] = [
-    { key: "title", header: "Item", primary: true, cell: (i) => <span className="font-semibold break-words">{i.title}</span> },
-    { key: "body", header: "Details", cell: (i) => <span className="text-muted break-words">{i.body || "—"}</span> },
-    {
-      key: "created",
-      header: "Added",
-      className: "whitespace-nowrap",
-      cell: (i) => i.createdAt.toISOString().slice(0, 10),
-    },
-    {
-      key: "actions",
-      header: "Actions",
-      srOnlyHeader: true,
-      hideLabel: true,
-      className: "text-right",
-      cell: (i) => (
-        <form action={deleteItemAction}>
-          <input type="hidden" name="id" value={i.id} />
-          <button type="submit" className={buttonDanger} aria-label={`Delete ${i.title}`}>
-            Delete
-          </button>
-        </form>
-      ),
-    },
-  ];
-
   return (
     <>
-      <PageIntro
-        section="Dashboard"
-        title={`Hi, ${user.name}`}
-        description={`Signed in as ${user.email}. Role: ${user.role}.`}
-      />
-
-      <StatGrid>
-        <StatTile value={all.length} label={user.role === "admin" ? "Items (everyone's)" : "Your items"} tone="accent" />
-        <StatTile value={items.length} label="Shown" />
-      </StatGrid>
-
-      <Panel title="AI summary">
-        <SummaryPanel />
-      </Panel>
-
-      <Panel title="Add an item">
-        <AddItemForm />
-      </Panel>
-
-      <Panel title={user.role === "admin" ? "All items" : "Your items"} count={all.length}>
-        <FilterBar
-          label="Filter items"
-          search={{ value: q, placeholder: "Search items…" }}
-          sort={{ name: "sort", label: "Sort", value: sort, options: sorts }}
-          view={{ value: view }}
-        />
-        <DataList
-          caption="Items"
-          rows={items}
-          rowKey={(i) => i.id}
-          columns={columns}
-          view={view}
-          empty={all.length === 0 ? "Nothing yet. Add your first item above." : "No items match your search."}
-        />
+      <PageIntro section="Dashboard" title={`Hi, ${user.name}`} description={`Signed in as ${user.email}. Role: ${roleLabel[user.role]}.`} />
+      <Panel title="Your account">
+        <p className="mb-3 break-words text-muted">
+          {user.role === "agent"
+            ? "You can create and manage listings through the agent API. The editor arrives with the agent pages."
+            : user.role === "admin"
+              ? "Admins see counts and moderate listings. Grant the agent role from the admin page."
+              : "Browse listings, save favorites and write to an agent. An admin grants the agent role."}
+        </p>
+        {user.role === "admin" ? (
+          <Link href="/admin" className={buttonSecondary}>
+            Admin
+          </Link>
+        ) : null}
       </Panel>
     </>
   );

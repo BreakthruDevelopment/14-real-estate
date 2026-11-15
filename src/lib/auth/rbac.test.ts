@@ -49,4 +49,11 @@ describe("toRole", () => {
   it("reads admin from a comma-separated list", () => {
     expect(toRole("user, admin")).toBe("admin");
   });
+
+  it("returns one role: admin over agent over user", () => {
+    expect(toRole("agent")).toBe("agent");
+    expect(toRole("user,agent")).toBe("agent");
+    expect(toRole("agent, admin")).toBe("admin");
+    expect(toRole("Agent")).toBe("user"); // roles are exact
+  });
 });

@@ -1,5 +1,22 @@
 import { sql } from "drizzle-orm";
-import { boolean, check, date, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  check,
+  customType,
+  date,
+  index,
+  integer,
+  jsonb,
+  numeric,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  unique,
+  uniqueIndex,
+  uuid,
+  vector,
+} from "drizzle-orm/pg-core";
 
 // ---------------------------------------------------------------------------
 // Auth tables (shape required by Better Auth with the admin plugin).
@@ -69,35 +86,235 @@ export const verification = pgTable("verification", {
 });
 
 // ---------------------------------------------------------------------------
-// Example domain table. Each app replaces this with its own entities, keeping
-// the ownerId pattern so per-user access control stays enforceable in SQL.
+// Domain tables (spec 14, "Data model"). Access rules live in src/lib/access.ts; every query that returns
+// listings selects explicit columns, so `embedding`, `tsv` and `embed_hash` never reach a response.
 // ---------------------------------------------------------------------------
 
-export const item = pgTable(
-  "item",
+export const PROPERTY_TYPES = ["house", "condo", "townhouse", "multi_family", "land"] as const;
+export const LISTING_STATUSES = ["draft", "active", "pending", "sold", "withdrawn"] as const;
+export const GEO_SOURCES = ["zip", "device", "manual"] as const;
+export const PHOTO_VARIANTS = ["lg", "md", "sm"] as const;
+export const INQUIRY_STATUSES = ["open", "contacted", "closed"] as const;
+export const EMBED_DIMS = 768;
+/** A stored photo variant may not exceed this (spec: `bytes` bytea at most 400 KB). */
+export const PHOTO_VARIANT_MAX_BYTES = 400 * 1024;
+
+const list = (values: readonly string[]) => sql.raw(values.map((v) => `'${v}'`).join(", "));
+
+/** Postgres `bytea` as a Node Buffer. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+});
+
+/** Postgres `tsvector`; only ever a generated column, never written. */
+const tsvector = customType<{ data: string }>({
+  dataType: () => "tsvector",
+});
+
+export const listing = pgTable(
+  "listing",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    ownerId: text("owner_id")
+    /** Owner. `restrict`: nothing deletes users (Better Auth's remove-user is disabled), so listings never orphan. */
+    agentId: text("agent_id")
       .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
+      .references(() => user.id, { onDelete: "restrict" }),
     title: text("title").notNull(),
-    body: text("body").notNull().default(""),
-    /** Set by clients that retry (see src/lib/client-op.ts); unique per owner, so a replay returns the first row. */
+    propertyType: text("property_type", { enum: PROPERTY_TYPES }).notNull(),
+    status: text("status", { enum: LISTING_STATUSES }).notNull().default("draft"),
+    priceUsd: integer("price_usd").notNull(),
+    beds: integer("beds").notNull(),
+    baths: numeric("baths", { precision: 3, scale: 1, mode: "number" }).notNull(),
+    sqft: integer("sqft"),
+    lotSqft: integer("lot_sqft"),
+    yearBuilt: integer("year_built"),
+    features: text("features").array().notNull().default(sql`'{}'::text[]`),
+    addressLine: text("address_line").notNull(),
+    city: text("city").notNull(),
+    state: text("state").notNull(),
+    zip: text("zip").notNull(),
+    lat: numeric("lat", { precision: 8, scale: 5, mode: "number" }),
+    lng: numeric("lng", { precision: 8, scale: 5, mode: "number" }),
+    geoSource: text("geo_source", { enum: GEO_SOURCES }),
+    description: text("description").notNull().default(""),
+    /** Never public. */
+    agentNotes: text("agent_notes").notNull().default(""),
+    /** Maintained by the search module (14.6): title, type, city, ZIP, features, description. No street number, no agent data. */
+    searchText: text("search_text").notNull().default(""),
+    tsv: tsvector("tsv").generatedAlwaysAs(sql`to_tsvector('english', search_text)`),
+    embedding: vector("embedding", { dimensions: EMBED_DIMS }),
+    embeddingModel: text("embedding_model"),
+    embedHash: text("embed_hash"),
+    /** Hidden by an admin (a reason is required) or by revoking the agent (`agent_revoked`). Hidden listings 404 publicly. */
+    hiddenAt: timestamp("hidden_at", { withTimezone: true }),
+    hiddenReason: text("hidden_reason"),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    clientOpId: uuid("client_op_id"),
+    /** Optimistic locking: every update must name the version it read; a stale one is a 409. */
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("listing_agent_client_op_uidx").on(t.agentId, t.clientOpId),
+    index("listing_agent_status_idx").on(t.agentId, t.status),
+    index("listing_status_geo_idx").on(t.status, t.lat, t.lng),
+    index("listing_tsv_idx").using("gin", t.tsv),
+    check("listing_property_type_chk", sql`${t.propertyType} in (${list(PROPERTY_TYPES)})`),
+    check("listing_status_chk", sql`${t.status} in (${list(LISTING_STATUSES)})`),
+    check("listing_geo_source_chk", sql`${t.geoSource} is null or ${t.geoSource} in (${list(GEO_SOURCES)})`),
+    check("listing_title_chk", sql`char_length(${t.title}) between 1 and 100`),
+    check("listing_price_chk", sql`${t.priceUsd} between 1000 and 100000000`),
+    check("listing_beds_chk", sql`${t.beds} between 0 and 20`),
+    check("listing_baths_chk", sql`${t.baths} between 0 and 20`),
+    check("listing_sqft_chk", sql`${t.sqft} is null or ${t.sqft} between 100 and 100000`),
+    check("listing_lot_chk", sql`${t.lotSqft} is null or ${t.lotSqft} between 100 and 1000000000`),
+    check("listing_year_chk", sql`${t.yearBuilt} is null or ${t.yearBuilt} between 1800 and 2027`),
+    check("listing_features_chk", sql`cardinality(${t.features}) <= 20`),
+    check("listing_address_chk", sql`char_length(${t.addressLine}) between 1 and 200 and char_length(${t.city}) between 1 and 80`),
+    check("listing_state_zip_chk", sql`${t.state} ~ '^[A-Z]{2}$' and ${t.zip} ~ '^[0-9]{5}$'`),
+    check("listing_geo_chk", sql`(${t.lat} is null) = (${t.lng} is null) and (${t.lat} is null) = (${t.geoSource} is null)`),
+    check("listing_bounds_chk", sql`${t.lat} is null or (${t.lat} between 17.5 and 71.5 and ${t.lng} between -179 and -64)`),
+    check("listing_description_chk", sql`char_length(${t.description}) <= 3000 and char_length(${t.agentNotes}) <= 1000`),
+    check("listing_hidden_chk", sql`(${t.hiddenAt} is null) = (${t.hiddenReason} is null)`),
+    check("listing_hidden_reason_chk", sql`${t.hiddenReason} is null or char_length(${t.hiddenReason}) between 1 and 200`),
+    check("listing_version_chk", sql`${t.version} >= 1`),
+  ],
+);
+
+export const listingPhoto = pgTable(
+  "listing_photo",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    listingId: uuid("listing_id")
+      .notNull()
+      .references(() => listing.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    alt: text("alt").notNull().default(""),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    bytesTotal: integer("bytes_total").notNull(),
+    sha256: text("sha256").notNull(),
     clientOpId: uuid("client_op_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("item_owner_id_idx").on(t.ownerId), uniqueIndex("item_owner_client_op_uidx").on(t.ownerId, t.clientOpId)],
+  (t) => [
+    uniqueIndex("listing_photo_client_op_uidx").on(t.listingId, t.clientOpId),
+    // The generated SQL is edited by hand to add DEFERRABLE INITIALLY DEFERRED, so a reorder can swap positions in one statement.
+    unique("listing_photo_position_uq").on(t.listingId, t.position),
+    check("listing_photo_position_chk", sql`${t.position} >= 0`),
+    check("listing_photo_alt_chk", sql`char_length(${t.alt}) <= 150`),
+    check("listing_photo_size_chk", sql`${t.width} > 0 and ${t.height} > 0 and ${t.bytesTotal} >= 0`),
+  ],
 );
+
+/** Photo bytes. Only the image route reads `bytes`; every other query leaves the column out. */
+export const photoBlob = pgTable(
+  "photo_blob",
+  {
+    photoId: uuid("photo_id")
+      .notNull()
+      .references(() => listingPhoto.id, { onDelete: "cascade" }),
+    variant: text("variant", { enum: PHOTO_VARIANTS }).notNull(),
+    bytes: bytea("bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.photoId, t.variant] }),
+    check("photo_blob_variant_chk", sql`${t.variant} in (${list(PHOTO_VARIANTS)})`),
+    check("photo_blob_bytes_chk", sql`octet_length(${t.bytes}) <= ${sql.raw(String(PHOTO_VARIANT_MAX_BYTES))}`),
+  ],
+);
+
+/** US Census ZCTA centroids, loaded once by the 14.3 loader. Public. */
+export const zipCentroid = pgTable(
+  "zip_centroid",
+  {
+    zip: text("zip").primaryKey(),
+    lat: numeric("lat", { precision: 8, scale: 5, mode: "number" }).notNull(),
+    lng: numeric("lng", { precision: 8, scale: 5, mode: "number" }).notNull(),
+  },
+  (t) => [check("zip_centroid_zip_chk", sql`${t.zip} ~ '^[0-9]{5}$'`)],
+);
+
+export const favorite = pgTable(
+  "favorite",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "restrict" }),
+    listingId: uuid("listing_id")
+      .notNull()
+      .references(() => listing.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.listingId] }), index("favorite_listing_idx").on(t.listingId)],
+);
+
+export const inquiry = pgTable(
+  "inquiry",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    listingId: uuid("listing_id")
+      .notNull()
+      .references(() => listing.id, { onDelete: "cascade" }),
+    buyerId: text("buyer_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "restrict" }),
+    message: text("message").notNull(),
+    status: text("status", { enum: INQUIRY_STATUSES }).notNull().default("open"),
+    clientOpId: uuid("client_op_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("inquiry_buyer_client_op_uidx").on(t.buyerId, t.clientOpId),
+    uniqueIndex("inquiry_one_open_uidx").on(t.buyerId, t.listingId).where(sql`${t.status} = 'open'`),
+    index("inquiry_listing_idx").on(t.listingId, t.status),
+    check("inquiry_status_chk", sql`${t.status} in (${list(INQUIRY_STATUSES)})`),
+    check("inquiry_message_chk", sql`char_length(${t.message}) between 1 and 1000`),
+  ],
+);
+
+/** AI description drafts (written by 14.5); the last 5 per listing are kept. */
+export const descriptionDraft = pgTable(
+  "description_draft",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    listingId: uuid("listing_id")
+      .notNull()
+      .references(() => listing.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "restrict" }),
+    output: jsonb("output").$type<Record<string, unknown>>().notNull(),
+    /** Flags and dropped items from the server-side checks. */
+    checks: jsonb("checks").$type<Record<string, unknown>>().notNull(),
+    factsHash: text("facts_hash").notNull(),
+    provider: text("provider").notNull(),
+    demo: boolean("demo").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("description_draft_listing_idx").on(t.listingId, t.createdAt)],
+);
+
+/** Cache of search-query embeddings, keyed by sha256(model + normalised text). No query text is stored. Pruned at 7 days. */
+export const queryEmbedding = pgTable("query_embedding", {
+  key: text("key").primaryKey(),
+  model: text("model").notNull(),
+  embedding: vector("embedding", { dimensions: EMBED_DIMS }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 // ---------------------------------------------------------------------------
 // Usage limits (src/lib/usage.ts). Each app lists its own kinds here; changing a list
 // needs a migration, because the CHECK constraints below are part of the schema.
 // ---------------------------------------------------------------------------
 
-export const RATE_KINDS = ["api_write", "ai", "upload"] as const;
-export const DAILY_USAGE_KINDS = ["ai", "demo_load"] as const;
-
-const list = (values: readonly string[]) => sql.raw(values.map((v) => `'${v}'`).join(", "));
+export const RATE_KINDS = ["api_write", "ai", "photo_upload", "inquiry"] as const;
+export const DAILY_USAGE_KINDS = ["ai", "demo_load", "embed_doc", "embed_query"] as const;
 
 /** App-wide daily counters (one row per UTC day and kind) for free-tier caps. */
 export const dailyUsage = pgTable(
@@ -174,5 +391,6 @@ export const job = pgTable(
 );
 
 export type User = typeof user.$inferSelect;
-export type Item = typeof item.$inferSelect;
+export type ListingRow = typeof listing.$inferSelect;
+export type InquiryRow = typeof inquiry.$inferSelect;
 export type Job = typeof job.$inferSelect;
