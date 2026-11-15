@@ -15,6 +15,12 @@ import { advisoryLock, consumeRate } from "@/lib/usage";
 
 const I = schema.inquiry;
 
+/** Postgres unique violation (23505), as raised by postgres.js or wrapped by Drizzle. */
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } } | null;
+  return e?.code === "23505" || e?.cause?.code === "23505";
+}
+
 export async function createInquiry(actor: Actor | null, input: unknown): Promise<{ inquiry: typeof I.$inferSelect; created: boolean }> {
   assertCan(actor, "inquiry:create");
   const data = inquiryInput.parse(input);
@@ -101,9 +107,6 @@ export async function updateInquiryStatus(actor: Actor | null, rawId: string, in
   const { status } = inquiryStatusInput.parse(input);
   return db().transaction(async (tx) => {
     await lockAgent(tx, actor);
-    // Same order as deleteListing (agent's write allowance, then the rows it touches), so the two never deadlock:
-    // take the allowance's lock first, even though a no-op change won't spend it.
-    await advisoryLock(tx, `rate:api_write:${actor.id}`);
     const [row] = await tx
       .select({ id: I.id, listingId: I.listingId, buyerId: I.buyerId, status: I.status })
       .from(I)
@@ -121,7 +124,13 @@ export async function updateInquiryStatus(actor: Actor | null, rawId: string, in
         .where(and(eq(I.buyerId, row.buyerId), eq(I.listingId, row.listingId), eq(I.status, "open")));
       if (other) throw new ConflictError("This buyer already has another open inquiry on this listing.");
     }
-    await tx.update(I).set({ status, updatedAt: new Date() }).where(eq(I.id, id));
+    try {
+      await tx.update(I).set({ status, updatedAt: new Date() }).where(eq(I.id, id));
+    } catch (err) {
+      // The buyer wrote again between the check above and this update (their create doesn't take the agent's locks).
+      if (isUniqueViolation(err)) throw new ConflictError("This buyer already has another open inquiry on this listing.");
+      throw err;
+    }
     return { id, status };
   });
 }

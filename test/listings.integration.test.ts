@@ -313,6 +313,24 @@ describe.skipIf(!url)("listings, favorites and inquiries (Postgres)", () => {
   });
 
   describe("lock order", () => {
+    it("an inquiry reopen racing the buyer's new inquiry answers 409, never a 500, and never leaves two open", async () => {
+      const racer = await makeUser(sql, P, "reopenagent", "agent");
+      const l = (await L.createListing(racer, facts({ title: "Reopen race" }))).listing;
+      await addPhoto(sql, l.id);
+      await L.updateListing(racer, l.id, { version: 1, status: "active" });
+      for (let i = 0; i < 15; i++) {
+        const buyerI = await makeUser(sql, P, `reopenbuyer${i}`, "user");
+        const [{ id: closedId }] = await sql`insert into inquiry (listing_id, buyer_id, message, status, client_op_id) values (${l.id}, ${buyerI.id}, 'old', 'closed', gen_random_uuid()) returning id`;
+        const results = await Promise.allSettled([
+          I.updateInquiryStatus(racer, closedId, { status: "open" }),
+          I.createInquiry(buyerI, { listingId: l.id, message: "new", clientOpId: crypto.randomUUID() }),
+        ]);
+        for (const r of results) if (r.status === "rejected") expect((r.reason as { status?: number }).status).toBe(409);
+        expect((await sql`select count(*)::int as n from inquiry where buyer_id = ${buyerI.id} and status = 'open'`)[0].n).toBe(1);
+        await sql`delete from rate_event where user_id = ${racer.id}`;
+      }
+    });
+
     it("an inquiry status change racing the deletion of its listing never deadlocks", async () => {
       const racer = await makeUser(sql, P, "lockracer", "agent");
       const buyers = await makeUser(sql, P, "lockbuyer", "user");
@@ -322,10 +340,15 @@ describe.skipIf(!url)("listings, favorites and inquiries (Postgres)", () => {
         const live = await L.updateListing(racer, l.id, { version: 1, status: "active" });
         const [{ id: inquiryId }] = await sql`insert into inquiry (listing_id, buyer_id, message, client_op_id) values (${l.id}, ${buyers.id}, 'hi', gen_random_uuid()) returning id`;
         await L.updateListing(racer, l.id, { version: live.version, status: "withdrawn" });
-        const results = await Promise.allSettled([I.updateInquiryStatus(racer, inquiryId, { status: "contacted" }), L.deleteListing(racer, l.id)]);
+        const results = await Promise.allSettled([
+          I.updateInquiryStatus(racer, inquiryId, { status: "contacted" }),
+          L.deleteListing(racer, l.id),
+          L.updateListing(racer, l.id, { version: live.version + 1, title: "edited while deleting" }),
+          L.setListingLocation(racer, l.id, { source: "zip", version: live.version + 1 }),
+        ]);
         for (const r of results) {
-          // Each either finishes or is refused with a normal 404 (the other won); a deadlock would surface as a status-less error.
-          if (r.status === "rejected") expect(r.reason).toMatchObject({ status: 404 });
+          // Each either finishes or is refused with a normal 404/409 (another one won); a deadlock would surface as a status-less error.
+          if (r.status === "rejected") expect([404, 409]).toContain((r.reason as { status?: number }).status);
         }
         expect(await sql`select 1 from listing where id = ${l.id}`).toHaveLength(0);
         await sql`delete from rate_event where user_id = ${racer.id}`;

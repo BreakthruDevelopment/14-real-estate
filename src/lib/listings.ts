@@ -151,9 +151,13 @@ export async function listMyListings(actor: Actor | null, opts: { status?: Listi
 }
 
 /**
- * Lock the acting user's row for the rest of the transaction and check they are still an unbanned agent. The role
- * in `actor` came from the session; this re-reads it, so a revoke that committed a moment ago wins, and a revoke
- * (which takes the same row FOR UPDATE) waits for a write that is already in flight.
+ * The first call of every agent write transaction. It locks the acting user's row FOR SHARE and checks they are still
+ * an unbanned agent: the role in `actor` came from the session, so this re-reads it, and a revoke that committed a
+ * moment ago wins (a revoke takes the same row FOR UPDATE, so it also waits for a write already in flight).
+ *
+ * It then takes the agent's write-allowance lock (the one `consumeRate` uses), so EVERY agent write transaction locks
+ * in the same order: user row, allowance, then listing, photo and inquiry rows. Taking the rows first and the
+ * allowance later deadlocked a listing edit against a delete (Postgres aborts one of them and the caller sees a 500).
  */
 export async function lockAgent(tx: Tx, actor: Actor): Promise<void> {
   const [u] = await tx
@@ -162,6 +166,7 @@ export async function lockAgent(tx: Tx, actor: Actor): Promise<void> {
     .where(eq(schema.user.id, actor.id))
     .for("share");
   if (!u || u.banned || toRole(u.role) !== "agent") throw new ForbiddenError();
+  await advisoryLock(tx, `rate:api_write:${actor.id}`);
 }
 
 const TOO_MANY_WRITES = "Too many changes this hour. Try again later.";
@@ -375,9 +380,6 @@ export async function deleteListing(actor: Actor | null, rawId: string): Promise
   const id = uuidOr404(rawId);
   await db().transaction(async (tx) => {
     await lockAgent(tx, actor);
-    // The agent's write allowance is locked before any listing or inquiry row, the same order as updateInquiryStatus
-    // (the delete cascades to the listing's inquiries), so the two can't deadlock.
-    await advisoryLock(tx, `rate:api_write:${actor.id}`);
     const [row] = await tx
       .select({ status: L.status })
       .from(L)
