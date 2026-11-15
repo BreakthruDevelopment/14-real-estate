@@ -75,3 +75,6 @@ export function parseJsonBody(bytes: Buffer): unknown {
 export async function readJson(request: Request, limit: number = JSON_BODY_LIMIT): Promise<unknown> {
   return parseJsonBody(await readBodyCapped(request, limit));
 }
+
+/** Headers for responses that depend on who is asking (drafts, notes, inquiries): never stored by a shared cache. */
+export const NO_STORE = { "Cache-Control": "private, no-store" } as const;

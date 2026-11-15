@@ -26,6 +26,13 @@ const schema = z.object({
   AI_EMBED_MODEL: z.string().optional(),
   // Provider call timeout. 20 s keeps AI calls inside Lambda's 29 s limit (route maxDuration is 25 s).
   AI_TIMEOUT_MS: z.coerce.number().int().positive().max(22000).default(20000),
+  // Caps shown on /admin and enforced where the work happens (photos in 14.4, AI in 14.5, embeddings in 14.6).
+  PHOTO_STORE_CAP_MB: z.coerce.number().int().positive().default(600),
+  AI_DAILY_CAP: z.coerce.number().int().positive().default(200),
+  EMBED_DOC_DAILY_CAP: z.coerce.number().int().positive().default(500),
+  EMBED_QUERY_DAILY_CAP: z.coerce.number().int().positive().default(1000),
+  // Provisioned storage of the shared Postgres server, for the /admin "70% of the server" warning (Azure B1ms: 32 GB).
+  DB_SERVER_STORAGE_GB: z.coerce.number().positive().default(32),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 

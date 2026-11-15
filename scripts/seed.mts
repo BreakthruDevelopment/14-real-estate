@@ -1,7 +1,10 @@
 /**
  * Creates a demo admin and a demo user so a fresh deploy has something to show.
  * Passwords come from env, never from the repo:
- *   SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD, SEED_USER_EMAIL, SEED_USER_PASSWORD
+ *   SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD, SEED_USER_EMAIL, SEED_USER_PASSWORD,
+ *   SEED_AGENT_EMAIL, SEED_AGENT_PASSWORD, SEED_AGENT2_EMAIL, SEED_AGENT2_PASSWORD (a second agent, for the smoke test)
+ * Agents are granted by an admin in the app (POST /api/admin/roles); this script writes the role directly, so it
+ * is for CI, local development and the smoke accounts only.
  */
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -14,6 +17,8 @@ if (!DATABASE_URL) throw new Error("DATABASE_URL is not set");
 const accounts = [
   { email: process.env.SEED_ADMIN_EMAIL, password: process.env.SEED_ADMIN_PASSWORD, name: "Demo Admin", role: "admin" },
   { email: process.env.SEED_USER_EMAIL, password: process.env.SEED_USER_PASSWORD, name: "Demo User", role: "user" },
+  { email: process.env.SEED_AGENT_EMAIL, password: process.env.SEED_AGENT_PASSWORD, name: "Demo Agent", role: "agent" },
+  { email: process.env.SEED_AGENT2_EMAIL, password: process.env.SEED_AGENT2_PASSWORD, name: "Demo Agent Two", role: "agent" },
 ].filter((a): a is { email: string; password: string; name: string; role: string } => Boolean(a.email && a.password));
 
 if (accounts.length === 0) {

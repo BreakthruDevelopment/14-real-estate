@@ -37,6 +37,11 @@ jobs:
       APP_URL: http://localhost:3000
       AI_PROVIDER: demo
       NEXT_TELEMETRY_DISABLED: "1"
+      # Two agents for the smoke test (an admin grants the role in the live app; CI writes it directly).
+      SMOKE_AGENT_EMAIL: smoke-agent@example.test
+      SMOKE_AGENT_PASSWORD: ci-smoke-agent-pass-1
+      SMOKE_AGENT2_EMAIL: smoke-agent2@example.test
+      SMOKE_AGENT2_PASSWORD: ci-smoke-agent-pass-2
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -57,6 +62,11 @@ jobs:
           cp -r .next/static .next/standalone/.next/
           PORT=3000 HOSTNAME=127.0.0.1 nohup node .next/standalone/server.js > app.log 2>&1 &
           for i in $(seq 1 30); do curl -fsS localhost:3000/api/health && break; sleep 1; done
+      - name: Seed the smoke agents
+        run: |
+          SEED_AGENT_EMAIL="$SMOKE_AGENT_EMAIL" SEED_AGENT_PASSWORD="$SMOKE_AGENT_PASSWORD" \
+          SEED_AGENT2_EMAIL="$SMOKE_AGENT2_EMAIL" SEED_AGENT2_PASSWORD="$SMOKE_AGENT2_PASSWORD" \
+          pnpm db:seed
       - name: End-to-end smoke test
         run: bash scripts/smoke.sh
       - name: App log on failure

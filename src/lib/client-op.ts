@@ -5,7 +5,7 @@
  *    double tap, a retry after a timeout). If the client mints a fresh id per click, the retry creates a second row.
  *    Instead: keep ONE op id in a `useRef` per user intent, send it with every attempt, and clear it only once the
  *    server has answered (ok, or a conflict/validation answer). A thrown network error keeps it, so the retry reuses
- *    it and the server (unique index on the op id; see `createItem`) returns the first result. If the user changes
+ *    it and the server (unique index on the op id; see `createListing`) returns the first result. If the user changes
  *    what they are sending, `opFor` mints a new id, because the intent changed.
  *
  *      const op = useRef<KeyedOp | null>(null);

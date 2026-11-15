@@ -4,7 +4,12 @@
  * handler calls these before touching data.
  */
 
-export const ROLES = ["user", "admin"] as const;
+/**
+ * `user` is a buyer (every sign-up), `agent` lists properties (granted only by an admin, through
+ * `POST /api/admin/roles`), `admin` sees counts and moderates. A user holds exactly one role and admin is NOT a
+ * superset of `agent`: an admin can't create or edit listings.
+ */
+export const ROLES = ["user", "agent", "admin"] as const;
 export type Role = (typeof ROLES)[number];
 
 export type Actor = { id: string; role: Role };
@@ -18,13 +23,19 @@ export function isRole(value: unknown): value is Role {
   return typeof value === "string" && (ROLES as readonly string[]).includes(value);
 }
 
-/** Better Auth's admin plugin can store comma-separated roles; take the strongest. */
+/** Better Auth's admin plugin can store comma-separated roles; take the strongest (admin > agent > user). */
 export function toRole(value: string | null | undefined): Role {
   if (!value) return "user";
   const parts = value.split(",").map((p) => p.trim());
-  return parts.includes("admin") ? "admin" : "user";
+  if (parts.includes("admin")) return "admin";
+  return parts.includes("agent") ? "agent" : "user";
 }
 
+/**
+ * The template's generic owner rule (admin passes everything). NOT used for this app's data: listings, photos,
+ * inquiries and favorites are authorized by `src/lib/access.ts`, where admin gets counts only. Kept because the
+ * shared AI tool tests and `README` patterns still use it.
+ */
 export function can(actor: Actor, action: Action, resource?: Owned): boolean {
   if (actor.role === "admin") return true;
   if (action === "create") return true;
