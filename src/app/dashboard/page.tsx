@@ -15,7 +15,7 @@ export default async function DashboardPage() {
     <>
       <PageIntro section="Dashboard" title={`Hi, ${user.name}`} description={`Signed in as ${user.email}. Role: ${roleLabel[user.role]}.`} />
       <Panel title="Your account">
-        <p className="mb-3 break-words text-muted">
+        <p className="mb-3 wrap-anywhere text-muted">
           {user.role === "agent"
             ? "You can create and manage listings through the agent API. The editor arrives with the agent pages."
             : user.role === "admin"
