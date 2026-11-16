@@ -86,9 +86,16 @@ jobs:
           context: .
           target: runner
           push: false
+          # Loaded into the local daemon so the sharp check below can actually run the image.
+          load: true
           tags: app:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # sharp's native binding is a per-platform optional dependency: this runner builds and tests on glibc,
+      # while the image is node:22-alpine (musl). A green `pnpm test` on the host says nothing about whether the
+      # deployed container can decode a photo, so the check runs inside the image that ships.
+      - name: sharp loads and processes an image in the built image
+        run: docker run --rm --workdir /app app:ci node -e "$(cat scripts/check-sharp.cjs)"
       - name: Build migration image
         uses: docker/build-push-action@v6
         with:
