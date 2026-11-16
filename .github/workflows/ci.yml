@@ -110,7 +110,8 @@ jobs:
         run: |
           mkdir -p bench
           # The module, bundled, so no TypeScript loader is counted in the measurement. sharp stays external:
-          # the image resolves its own musl binding from /app/node_modules.
+          # the image resolves its own musl binding from /app/node_modules. esbuild is a direct devDependency
+          # for this: pnpm does not put a transitive package's binary on the path.
           pnpm exec esbuild src/lib/images/process.ts --bundle --platform=node --format=cjs --target=node22 \
             --external:sharp --alias:@=./src --alias:server-only=./test/server-only-stub.ts \
             --outfile=bench/process.bundle.cjs
