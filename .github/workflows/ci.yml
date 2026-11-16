@@ -96,6 +96,35 @@ jobs:
       # deployed container can decode a photo, so the check runs inside the image that ships.
       - name: sharp loads and processes an image in the built image
         run: docker run --rm --workdir /app app:ci node -e "$(cat scripts/check-sharp.cjs)"
+
+      # The memory gate (14.2, decision 2), inside the image that ships. sharp's peak RSS is mostly its
+      # allocator's behaviour and the allocator comes with the base image, so a figure measured on this runner's
+      # glibc does not describe node:22-alpine (musl). Same two limits the deployed replica runs under.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the benchmark harness
+        run: |
+          mkdir -p bench
+          # The module, bundled, so no TypeScript loader is counted in the measurement. sharp stays external:
+          # the image resolves its own musl binding from /app/node_modules.
+          pnpm exec esbuild src/lib/images/process.ts --bundle --platform=node --format=cjs --target=node22 \
+            --external:sharp --alias:@=./src --alias:server-only=./test/server-only-stub.ts \
+            --outfile=bench/process.bundle.cjs
+          cp scripts/bench-images.cjs bench/
+          # The worst allowed inputs. Generated here rather than in the container so the bytes are identical to
+          # the ones the tests used.
+          pnpm fixtures:images
+      - name: Peak RSS inside the Alpine image, at 512 MiB / 0.25 vCPU
+        run: |
+          docker run --rm \
+            --memory=512m --memory-swap=512m --cpus=0.25 \
+            -v "$PWD/bench:/app/bench:ro" \
+            -v "$PWD/test/fixtures/images/generated:/app/fixtures:ro" \
+            --workdir /app app:ci node bench/bench-images.cjs
       - name: Build migration image
         uses: docker/build-push-action@v6
         with:
