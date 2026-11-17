@@ -40,3 +40,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# The 2048x2048 worst-allowed-input image fixtures (~14 MB). Written by `pnpm fixtures:images`, and by the
+# image tests on first run; kept out of the repo and out of the Docker build context.
+/test/fixtures/images/generated/
+
+# Benchmark harness built by the image CI job (bundle + a copy of scripts/bench-images.cjs).
+/bench/

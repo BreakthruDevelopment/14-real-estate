@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Build output of the image memory benchmark (an esbuild bundle plus a copy of scripts/bench-images.cjs),
+    // written by the `image` CI job and git-ignored.
+    "bench/**",
   ]),
 ]);
 
