@@ -329,6 +329,20 @@ export const SPECS: Spec[] = [
     build: () => Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64"),
   },
   {
+    name: "document.pdf",
+    band: [128, 2 * KB],
+    why: "libvips lists a pdf loader (poppler), disabled in this build but not necessarily in the next one; the module must refuse a PDF on its own rather than on libvips' say-so",
+    build: () =>
+      Buffer.from(
+        "%PDF-1.4\n" +
+          "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
+          "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n" +
+          "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n" +
+          "trailer<</Root 1 0 R>>\n" +
+          "%%EOF\n",
+      ),
+  },
+  {
     name: "vector.svg",
     band: [64, 2 * KB],
     why: "SVG is not an accepted type: it is a document, libvips renders it, and it can reference the network",

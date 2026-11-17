@@ -70,9 +70,14 @@ export const DEADLINE_MS = 10_000;
 /**
  * One running, one waiting, everyone else told to come back.
  *
- * Note for review: the spec prose says "more than 2 waiting", which reads as `maxWaiting: 2`. Issue 14.2's
- * "Done when" is explicit the other way ("one running, one waiting is fine, the next is refused"), so that is
- * what this is. It is one constant if the looser reading wins later.
+ * The spec prose reads "more than 2 waiting" and issue 14.2's "Done when" reads "one running, one waiting is
+ * fine, the next is refused". Settled at 1, and not only because the issue is the contract: **a second waiter
+ * could only ever produce a 504.** The deadline covers the queue wait as well as the processing, and a queued
+ * image already takes up to 8.1 s of the 10 s budget at 0.25 vCPU (measured inside the Alpine image by
+ * `scripts/bench-images.cjs`), so anything arriving behind one waiter has no budget left to be served in. A
+ * deeper queue would buy nothing but a slower refusal and another 4 MB input buffer held in memory meanwhile.
+ *
+ * The spec prose is corrected separately in `ai-dev-os`.
  */
 export const MAX_CONCURRENT = 1;
 export const MAX_WAITING = 1;
@@ -268,8 +273,15 @@ async function work(bytes: Buffer, format: ImageContentType, startedAt: number):
 
   const { width, height, pages } = header;
   if (!width || !height) throw reject("decode_failed", startedAt, { format, stage: "header" });
-  // libvips' own idea of the format has to agree with the magic bytes: a polyglot that starts with a JPEG marker
-  // and is read as something else gets no further.
+  // libvips' own idea of the format has to agree with the magic bytes.
+  //
+  // Honest note for review: this is defence in depth with **no test that distinguishes it**, and that is not an
+  // oversight. libvips picks its loader from the same magic bytes `sniff()` reads, so for the three accepted
+  // formats the two can essentially never disagree — every polyglot I could build (PNG signature over a GIF or
+  // JPEG body, a JPEG marker over a PNG, a RIFF/WEBP container holding junk) fails in the header parse above and
+  // comes back `decode_failed`, which is its own test. Deleting this line turns nothing red. It stays because it
+  // costs one comparison and it is the thing that holds if `sniff()` is ever changed or libvips gains a loader
+  // whose magic overlaps one of ours; it is not claimed as a tested control.
   if (header.format !== formatName(format)) {
     throw reject("unsupported", startedAt, { format, vipsFormat: header.format });
   }

@@ -36,15 +36,40 @@ const WEBP = "image/webp";
 /** The one call that makes libvips decode pixels. `metadata()` does not go through it; every variant does. */
 const sharpPrototype = Object.getPrototypeOf(sharp({ create: { width: 1, height: 1, channels: 3, background: "#000" } }));
 
-/** Runs `fn` while counting how many times anything in the process asks libvips for pixels. */
-async function countingDecodes<T>(fn: () => Promise<T>): Promise<{ result: PromiseSettledResult<T>; decodes: number }> {
-  const spy = vi.spyOn(sharpPrototype, "toBuffer");
+/**
+ * Every way sharp 0.35.5 can make libvips read pixels.
+ *
+ * `_pipeline` is the one all three output paths go through — `toBuffer`, `toUint8Array` and `toFile` each call
+ * it — so spying on it rather than on `toBuffer` makes the "nothing was decoded" proof hold for output paths
+ * this module does not use today but someone might add tomorrow. `stats` is the exception: it decodes through
+ * its own native binding and never touches `_pipeline`, so it is counted separately.
+ *
+ * `metadata` is deliberately **not** in this list. It parses the header and does not decode, which is not an
+ * assumption: `pixel limit > refuses a 20,000 x 20,000 header` calls it on a file whose pixel data cannot be
+ * decoded at all and it resolves with the dimensions.
+ */
+const DECODE_DRIVERS = ["_pipeline", "stats"] as const;
+/** Asking libvips to look at the bytes at all, decode or not. Used to prove an unsupported file never reaches it. */
+const LIBVIPS_ENTRY_POINTS = [...DECODE_DRIVERS, "metadata"] as const;
+
+async function countingCalls<T>(
+  methods: readonly string[],
+  fn: () => Promise<T>,
+): Promise<{ result: PromiseSettledResult<T>; calls: number; byMethod: Record<string, number> }> {
+  const spies = methods.map((m) => [m, vi.spyOn(sharpPrototype, m as never)] as const);
   try {
     const result = await Promise.allSettled([fn()]).then((r) => r[0]);
-    return { result, decodes: spy.mock.calls.length };
+    const byMethod = Object.fromEntries(spies.map(([m, s]) => [m, s.mock.calls.length]));
+    return { result, calls: Object.values(byMethod).reduce((a, b) => a + b, 0), byMethod };
   } finally {
-    spy.mockRestore();
+    for (const [, spy] of spies) spy.mockRestore();
   }
+}
+
+/** Runs `fn` while counting how many times anything in the process asks libvips for pixels. */
+async function countingDecodes<T>(fn: () => Promise<T>): Promise<{ result: PromiseSettledResult<T>; decodes: number }> {
+  const { result, calls } = await countingCalls(DECODE_DRIVERS, fn);
+  return { result, decodes: calls };
 }
 
 /** The gate holds its slot until the real work settles, which can outlive a call that hit its deadline. */
@@ -317,6 +342,33 @@ describe("formats that are refused", () => {
     expect(await reasonOf(processImage({ bytes, declaredType: "image/svg+xml" }))).toBe("unsupported");
   });
 
+  it("never hands an unsupported file to libvips at all, not even to read its header", async () => {
+    // The point of sniffing in our own code is that libvips never sees these bytes. There is a second line of
+    // defence further in (`header.format` has to agree with the magic bytes), and it is good that there is —
+    // but it only runs *after* libvips has parsed the file, so on its own it would mean a GIF, an SVG or a PDF
+    // still got fed to a stack of C parsers we have no reason to expose. This asserts the first line directly.
+    for (const name of ["tiny.gif", "vector.svg", "document.pdf"] as const) {
+      const bytes = await readFixture(name);
+      const { result, calls, byMethod } = await countingCalls(LIBVIPS_ENTRY_POINTS, () =>
+        processImage({ bytes, declaredType: PNG }),
+      );
+      expect(result.status).toBe("rejected");
+      expect((result as PromiseRejectedResult).reason).toMatchObject({ reason: "unsupported" });
+      expect(calls, `${name} reached libvips: ${JSON.stringify(byMethod)}`).toBe(0);
+    }
+  });
+
+  it("counts libvips entry points properly, so the zero above means something", async () => {
+    // The control for the test above: an accepted photo must register on the same spies.
+    const bytes = await readFixture("photo.png");
+    const { result, byMethod } = await countingCalls(LIBVIPS_ENTRY_POINTS, () =>
+      processImage({ bytes, declaredType: PNG }),
+    );
+    expect(result.status).toBe("fulfilled");
+    expect(byMethod.metadata).toBeGreaterThanOrEqual(1); // the header probe
+    expect(byMethod._pipeline).toBeGreaterThanOrEqual(4); // one decode plus one encode per variant
+  }, 30_000);
+
   it("refuses bytes that do not match the declared type", async () => {
     const png = await readFixture("photo.png");
     expect(await reasonOf(processImage({ bytes: png, declaredType: JPEG }))).toBe("unsupported");
@@ -328,6 +380,31 @@ describe("formats that are refused", () => {
     const bytes = await readFixture("photo.webp");
     expect(await reasonOf(processImage({ bytes, declaredType: "IMAGE/WEBP; charset=binary" }))).toBe("resolved");
     expect(await reasonOf(processImage({ bytes, declaredType: "application/octet-stream" }))).toBe("unsupported");
+  }, 30_000);
+
+  it("gets nowhere with a polyglot that wears accepted magic bytes", async () => {
+    // Each of these begins with magic the sniffer accepts and continues as something else, which is how a file
+    // gets past a magic-byte check. They fail in libvips' *header* parse, before any pixel work — a different
+    // code path from the truncated JPEG below, which has an intact header and fails in the decode.
+    const gif = await readFixture("tiny.gif");
+    const jpg = await readFixture("exif-gps.jpg");
+    const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const polyglots = {
+      "PNG signature, GIF body": { bytes: Buffer.concat([pngSignature, gif]), type: PNG },
+      "PNG signature, JPEG body": { bytes: Buffer.concat([pngSignature, jpg]), type: PNG },
+      "JPEG marker, PNG body": { bytes: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), await readFixture("photo.png")]), type: JPEG },
+      "RIFF/WEBP container, junk payload": {
+        bytes: Buffer.concat([Buffer.from("RIFF", "latin1"), Buffer.from([0x20, 0, 0, 0]), Buffer.from("WEBP", "latin1"), Buffer.alloc(32, 0x41)]),
+        type: WEBP,
+      },
+    };
+    for (const [name, { bytes, type }] of Object.entries(polyglots)) {
+      expect(sniff(bytes), `${name} should get past the magic check`).toBe(type);
+      const { result, decodes } = await countingDecodes(() => processImage({ bytes, declaredType: type }));
+      expect(result.status, name).toBe("rejected");
+      expect((result as PromiseRejectedResult).reason, name).toMatchObject({ reason: "decode_failed" });
+      expect(decodes, `${name} got as far as a decode`).toBe(0);
+    }
   }, 30_000);
 
   it("refuses a truncated JPEG as decode_failed", async () => {

@@ -26,8 +26,26 @@ const path = require("node:path");
 
 const BUNDLE = process.env.BENCH_BUNDLE || "/app/bench/process.bundle.cjs";
 const FIXTURES = process.env.BENCH_FIXTURES || "/app/fixtures";
-/** Decision 2's threshold. Over this, the gate has not been cleared and the run fails. */
-const BUDGET_MB = Number(process.env.RSS_BUDGET_MB || 400);
+/**
+ * Decision 2's threshold is about **the replica**, not about this harness. This process is the image module on
+ * its own, so comparing its total RSS against 400 MB would be lenient by roughly the size of the app that is
+ * missing from it.
+ *
+ * So the budget is on the **delta** — what processing images adds on top of whatever the process already was:
+ *
+ *     replica budget 400 MB  -  the built Next.js server at rest 112 MB  =  288 MB for images
+ *
+ * The delta is also the thing that actually regresses. A total would drift every time the harness baseline moved
+ * (a sharp upgrade, a Node upgrade) and would have to be re-tuned for reasons that have nothing to do with this
+ * module.
+ */
+const REPLICA_BUDGET_MB = Number(process.env.REPLICA_BUDGET_MB || 400);
+/**
+ * The built Next.js server, booted and serving, with no image work, under these same two limits. Re-measure and
+ * update this if the app grows: `node .next/standalone/server.js` in the same cgroup, then read VmHWM.
+ */
+const SERVER_BASELINE_MB = Number(process.env.SERVER_BASELINE_MB || 112);
+const DELTA_BUDGET_MB = Number(process.env.DELTA_BUDGET_MB || REPLICA_BUDGET_MB - SERVER_BASELINE_MB);
 /** Stop once two successive rounds move the peak less than this, so a flat allocator costs CI almost nothing. */
 const PLATEAU_PCT = Number(process.env.BENCH_PLATEAU_PCT || 2);
 const MAX_ROUNDS = Number(process.env.BENCH_MAX_ROUNDS || 8);
@@ -77,7 +95,8 @@ async function main() {
   console.log(`node sees:         constrainedMemory=${limits.nodeConstrained}, heap limit=${fmt(require("node:v8").getHeapStatistics().heap_size_limit)} MB`);
   console.log(`gate setting:      MAX_CONCURRENT=${MAX_CONCURRENT}, MAX_WAITING=${MAX_WAITING} (one decoding, ${MAX_WAITING} queued)`);
   console.log(`measurement:       VmHWM from /proc/self/status (kernel high-water mark, not a sample)`);
-  console.log(`budget:            ${BUDGET_MB} MB`);
+  console.log(`budget:            ${DELTA_BUDGET_MB} MB of image delta` +
+    ` (= replica budget ${REPLICA_BUDGET_MB} MB - server at rest ${SERVER_BASELINE_MB} MB)`);
 
   const inputs = [
     { file: "noisy-2048.png", type: "image/png" },
@@ -101,6 +120,7 @@ async function main() {
   let previousPeak = baseline;
   let flatRounds = 0;
   let round = 0;
+  let roundsRun = 0;
   let lastGrowth = 0;
   let plateaued = false;
   let stoppedBecause = `reached BENCH_MAX_ROUNDS=${MAX_ROUNDS}`;
@@ -116,6 +136,7 @@ async function main() {
       ]);
       images += 2;
     }
+    roundsRun = round;
     const peak = peakRss();
     const growth = ((peak - previousPeak) / previousPeak) * 100;
     const mu = process.memoryUsage();
@@ -139,36 +160,49 @@ async function main() {
   }
 
   const peak = peakRss();
+  const delta = peak - baseline;
+  const projectedReplica = SERVER_BASELINE_MB + mb(delta);
   console.log("--- result -----------------------------------------------------");
-  console.log(`images processed:  ${images} (${round} rounds; stopped because ${stoppedBecause})`);
+  console.log(`images processed:  ${images} (${roundsRun} rounds; stopped because ${stoppedBecause})`);
   console.log(`wall clock:        ${((Date.now() - started) / 1000).toFixed(0)}s at the CPU limit above`);
   console.log(`baseline peak RSS: ${fmt(baseline)} MB   (node + sharp + the module, before any image)`);
-  console.log(`PEAK RSS:          ${fmt(peak)} MB   (budget ${BUDGET_MB} MB)`);
-  console.log(`image delta:       ${fmt(peak - baseline)} MB`);
+  console.log(`peak RSS:          ${fmt(peak)} MB   (this process, which is the module alone)`);
+  console.log(`IMAGE DELTA:       ${fmt(delta)} MB   (budget ${DELTA_BUDGET_MB} MB)`);
+  console.log(`projected replica: ${projectedReplica.toFixed(1)} MB   (server at rest ${SERVER_BASELINE_MB} + delta, against ${REPLICA_BUDGET_MB} MB)`);
+
+  let failed = false;
 
   if (!plateaued) {
-    // Without a plateau this is a lower bound, not the peak. Saying so matters more than the number: a run that
-    // is cut short while still climbing is exactly how an under-budget result gets believed and the limit gets
-    // exceeded later.
+    // Without a plateau this is a lower bound, not the peak — so it is not an answer, and it must not be allowed
+    // to pass. The realistic regression is a heavier pipeline that runs out of wall clock before it settles:
+    // printing a warning into a three-thousand-line log and going green is exactly how the limit gets exceeded
+    // later with a passing build behind it.
     console.log(
       `\nNOT A SETTLED PEAK. The run stopped because ${stoppedBecause}, and the peak was still growing at\n` +
-        `${lastGrowth.toFixed(1)}% in the last round. Treat ${fmt(peak)} MB as a lower bound and rerun with a higher\n` +
-        `BENCH_MAX_ROUNDS / BENCH_MAX_SECONDS before drawing any conclusion from it.`,
+        `${lastGrowth.toFixed(1)}% in the last round. ${fmt(delta)} MB is a lower bound, not the delta. Rerun with a\n` +
+        `higher BENCH_MAX_ROUNDS / BENCH_MAX_SECONDS; failing rather than reporting an unsettled number.`,
     );
+    failed = true;
   }
 
-  if (mb(peak) > BUDGET_MB) {
+  if (mb(delta) > DELTA_BUDGET_MB) {
     console.log(
-      `\nOVER BUDGET by ${(mb(peak) - BUDGET_MB).toFixed(1)} MB. Per decision 2 this is a stop-and-ask, not something\n` +
-        `to tune away: the options are a per-app cpu/memory override in 30-apps-infra or smaller variants, and\n` +
-        `that is Michael's call. Do not "fix" this by changing the allocator or this benchmark.`,
+      `\nOVER BUDGET by ${(mb(delta) - DELTA_BUDGET_MB).toFixed(1)} MB of image delta, which projects to\n` +
+        `${projectedReplica.toFixed(1)} MB on the replica against a ${REPLICA_BUDGET_MB} MB threshold. Per decision 2 this is a\n` +
+        `stop-and-ask, not something to tune away: the options are a per-app cpu/memory override in\n` +
+        `30-apps-infra or smaller variants, and that is Michael's call. Do not "fix" this by changing the\n` +
+        `allocator, the baseline constant, or this benchmark.`,
     );
+    failed = true;
+  }
+
+  if (failed) {
     process.exitCode = 1;
     return;
   }
   console.log(
-    `\nWithin budget, with ${(BUDGET_MB - mb(peak)).toFixed(1)} MB to spare` +
-      `${plateaued ? " at a settled peak." : ", but see the warning above: this is a lower bound."}`,
+    `\nWithin budget at a settled peak: ${(DELTA_BUDGET_MB - mb(delta)).toFixed(1)} MB of delta to spare ` +
+      `(projected replica ${projectedReplica.toFixed(1)} MB).`,
   );
 }
 
