@@ -20,8 +20,11 @@
  *     back to `VmHWM` alone; it does not crash and it does not pretend.
  *
  * What the number is, and is not. On glibc, `MALLOC_ARENA_MAX=1` with low trim and mmap thresholds makes the
- * allocator behave like musl. Run that way, `VmHWM` and the cgroup peak both measure the same live working set, so
- * their agreement is **not** two independent confirmations of anything: it is one quantity read twice. The
+ * allocator behave like musl, but the two routes to a figure, default glibc and musl-like glibc, are not two
+ * independent confirmations of one number: they differ by retention, and only the one taken on the allocator that
+ * ships counts. Likewise `VmHWM` and the cgroup peak are not independent of each other: in a container where this is
+ * the only process, one process's RSS and the cgroup's anonymous charge are nearly the same quantity under either
+ * allocator, so their agreement is one quantity read twice. The
  * allocator does change the figure a great deal (the same workload read about 426 MB on default glibc and about
  * 208 MB musl-like, which is retention, not workload), so a number is only meaningful for the allocator it was
  * taken on, and the one that counts is the one measured inside the Alpine image. Nor does any of this show that a
@@ -54,15 +57,20 @@ const path = require("node:path");
  * positive decimal number ("512", "12.5"): "512m" (the docker `--memory` spelling), "abc", "", "0", "-5", "1e3",
  * "0x10" and "Infinity" are all refused, and there is no fallback to the default, because that would discard what
  * the operator asked for. A new knob should use this and not `Number(process.env.X)`.
+ *
+ * Position-independent on purpose: a bad value exits **inside this function**, so there is no later check a new
+ * knob could be placed below. The function either returns a validated number or the process is gone; it has no
+ * return path that carries an invalid value.
  */
-const envProblems = [];
 function envNumber(name, fallback, { integer = false } = {}) {
   const raw = process.env[name];
   if (raw === undefined) return fallback;
   const ok = /^\d+(\.\d+)?$/.test(raw) && Number.isFinite(Number(raw)) && Number(raw) > 0 && (!integer || Number.isInteger(Number(raw)));
   if (!ok) {
-    envProblems.push(`${name}=${JSON.stringify(raw)} is not a positive ${integer ? "whole " : ""}number (plain digits, no unit suffix such as "m")`);
-    return fallback;
+    console.error(
+      `bench refused to run: invalid environment.\n  ${name}=${JSON.stringify(raw)} is not a positive ${integer ? "whole " : ""}number (plain digits, no unit suffix such as "m")`,
+    );
+    process.exit(1);
   }
   return Number(raw);
 }
@@ -123,11 +131,6 @@ const MIN_ROUNDS = envNumber("BENCH_MIN_ROUNDS", 2, { integer: true });
 /** A hard wall-clock stop, so a pathologically slow runner cannot hang the job. */
 const MAX_SECONDS = envNumber("BENCH_MAX_SECONDS", 420);
 
-if (envProblems.length > 0) {
-  console.error("bench refused to run: invalid environment.\n  " + envProblems.join("\n  "));
-  process.exit(1);
-}
-
 const MB = 1024 * 1024;
 const mb = (bytes) => bytes / MB;
 const fmt = (bytes) => mb(bytes).toFixed(1);
@@ -151,7 +154,18 @@ function cgroupPeakSource() {
   for (const file of candidates) {
     try {
       const v = Number(fs.readFileSync(file, "utf8").trim());
-      if (Number.isFinite(v) && v > 0) return { file, read: () => Number(fs.readFileSync(file, "utf8").trim()) };
+      if (Number.isFinite(v) && v > 0) {
+        // Validated again on every read, not only at selection: the file can change after it was picked, and
+        // cgroup v2's `memory.max` holds the string "max" when unlimited, so a crossed path is a realistic slip.
+        // A NaN here would make both budget comparisons false and the gate would exit 0.
+        const read = () => {
+          const text = fs.readFileSync(file, "utf8").trim();
+          const n = Number(text);
+          if (!Number.isFinite(n) || n < 0) throw new Error(`cgroup peak file ${file} read ${JSON.stringify(text)}, not a non-negative number`);
+          return n;
+        };
+        return { file, read };
+      }
     } catch {
       /* try the next one */
     }
@@ -289,7 +303,8 @@ async function main() {
   const rssDelta = peak - baseline;
   // The cgroup peak also holds page cache and kernel memory, so its delta can be larger than VmHWM's. The gate
   // takes the larger of the two: whichever the kernel would see first.
-  const cgroupDelta = cgroup ? cgroup.read() - cgroupBaseline : null;
+  const cgroupPeak = cgroup ? cgroup.read() : null;
+  const cgroupDelta = cgroup ? cgroupPeak - cgroupBaseline : null;
   const delta = cgroupDelta === null ? rssDelta : Math.max(rssDelta, cgroupDelta);
   const projectedReplica = SERVER_BASELINE_MB + sharpStepMb + mb(delta);
   console.log("--- result -----------------------------------------------------");
@@ -302,7 +317,7 @@ async function main() {
   console.log(
     cgroupDelta === null
       ? `delta, cgroup:     not measured (no cgroup peak file)`
-      : `delta, cgroup:     ${fmt(cgroupDelta)} MB   (peak ${fmt(cgroup.read())} MB at the end, ${fmt(cgroupBaseline)} MB before the first image)`,
+      : `delta, cgroup:     ${fmt(cgroupDelta)} MB   (peak ${fmt(cgroupPeak)} MB at the end, ${fmt(cgroupBaseline)} MB before the first image)`,
   );
   console.log(`IMAGE DELTA:       ${fmt(delta)} MB   (the larger of the two; budget ${DELTA_BUDGET_MB.toFixed(1)} MB)`);
   console.log(
