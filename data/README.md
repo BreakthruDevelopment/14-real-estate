@@ -36,10 +36,14 @@ zip-centroid": approximate centres, fine for a 1-50 mile radius search, not surv
 ## Changes made to the source (CC BY requires this)
 
 - Dropped the `city`, `state`, `county` and `area_code` columns; renamed `lon` to `lng`.
-- Removed 12 rows with no coordinates and collapsed duplicate ZIPs (the source repeats some rows; no ZIP had two different coordinates).
-- Dropped 9 rows outside the app's US bounds (lat 17.5-71.5, lng -179 to -64). All of them have a longitude with the
-  wrong sign (for example 99545 at 162.89), so they are source errors: `17335, 56902, 56904, 56950, 73451, 81075,
-  81403, 84081, 99545`. The loader applies the same bounds, so it would skip them too.
+- Removed 12 rows with no coordinates. No duplicates needed collapsing: the source has 42,366 rows and 42,366
+  distinct ZIP codes, and 42,366 - 12 - 9 = 42,345 exactly.
+- Dropped 9 rows outside the app's US bounds (lat 17.5-71.5, lng -179 to -64): `17335, 56902, 56904, 56950, 73451,
+  81075, 81403, 84081, 99545`. All nine are source errors, but not all for the same reason. **Seven** carry a
+  longitude with the wrong sign and fall inside the bounds once it is negated (for example 99545 at 162.89).
+  The other **two** are wrong in some further way: negating the longitude of `73451` (59.580, 16.230) or `81075`
+  (37.040, 35.310) puts both in the mid-Atlantic, and neither is near the ZIP it claims. The loader applies the same
+  bounds, so it would skip all nine anyway.
 
 ## Replacing it with the Census file (if the owner decides so)
 

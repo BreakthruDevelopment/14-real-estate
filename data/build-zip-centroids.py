@@ -4,7 +4,9 @@
 Usage: python3 -I data/build-zip-centroids.py all_us_zipcodes.csv data/zcta-centroids.csv.gz
 
 Keeps zip, lat, lon (renamed lng) rounded to 5 decimals; drops rows with no coordinates and rows outside the app's
-US bounds (lat 17.5-71.5, lng -179 to -64); collapses duplicate ZIPs; sorts by ZIP. The gzip is `gzip -9n` (no name,
+US bounds (lat 17.5-71.5, lng -179 to -64); collapses duplicate ZIPs if any are present (the pinned source has
+none -- 42,366 rows, 42,366 distinct codes -- so this step currently removes nothing, and it is not a change to
+report under CC BY); sorts by ZIP. The gzip is `gzip -9n` (no name,
 no timestamp), so the output is byte-identical to the committed file.
 """
 import csv
