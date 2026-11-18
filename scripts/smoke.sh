@@ -6,7 +6,7 @@
 #   SMOKE_AGENT_EMAIL / SMOKE_AGENT_PASSWORD       required: the run fails loudly without them
 #   SMOKE_AGENT2_EMAIL / SMOKE_AGENT2_PASSWORD     optional: a second agent, for the "another agent gets 404" check
 #
-# This is the 14.1 flow (roles, drafts, access). Later slices add photos, publishing, search and inquiries.
+# This is the 14.1 and 14.4 flow (roles, drafts, access, photos). Later slices add search and inquiries.
 # The run deletes the draft it creates, also after a failure.
 set -euo pipefail
 
@@ -26,6 +26,9 @@ trap cleanup EXIT
 fail() { echo "SMOKE FAIL: $*" >&2; exit 1; }
 pass() { echo "ok - $*"; }
 status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+# Response headers, lower-cased, one per line (no body).
+headers() { curl -s -D - -o /dev/null "$@" | tr -d '\r' | tr 'A-Z' 'a-z'; }
+header_of() { grep -m1 "^$1:" | cut -d' ' -f2-; }
 json_id() { grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4; }
 json_version() { grep -o '"version":[0-9]*' | head -1 | cut -d: -f2; }
 uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen; }
@@ -169,11 +172,80 @@ echo "$zip_json" | grep -Eq '"lat":30\.2[0-9]*' || fail "78704 should be near la
 [ "$(status "$BASE_URL/api/geo/zip/abcde")" = "404" ] || fail "a malformed ZIP should be 404"
 pass "ZIP centroid lookup"
 
+# --- Photos (14.4): the upload boundary and the /img route ---
+PHOTO=test/fixtures/images/exif-gps.jpg   # a real JPEG that carries GPS EXIF
+[ -f "$PHOTO" ] || fail "missing fixture $PHOTO (run from the repo root)"
+upload_photo() { # <jar> <content-type> <op> <file> -> body, then the status on the last line
+  curl -s -w '\n%{http_code}' -b "$1" -H "content-type: $2" -H "x-client-op: $3" -H "origin: $BASE_URL" --data-binary "@$4" "$BASE_URL/api/listings/$id/photos"
+}
+code=$(status -X POST -b "$JAR_A" -H 'content-type: image/jpeg' -H "x-client-op: $(uuid)" -H "origin: $BASE_URL" --data-binary "@$PHOTO" "$BASE_URL/api/listings/$id/photos")
+[ "$code" = "403" ] || fail "a buyer uploading a photo should be 403, got $code"
+if [ "$HAVE_AGENT2" = "1" ]; then
+  code=$(status -X POST -b "$JAR_AGENT2" -H 'content-type: image/jpeg' -H "x-client-op: $(uuid)" -H "origin: $BASE_URL" --data-binary "@$PHOTO" "$BASE_URL/api/listings/$id/photos")
+  [ "$code" = "404" ] || fail "another agent's upload to this listing should be 404, got $code"
+fi
+code=$(upload_photo "$JAR_AGENT" image/png "$(uuid)" "$PHOTO" | tail -1)
+[ "$code" = "415" ] || fail "JPEG bytes declared as PNG should be 415, got $code"
+code=$(upload_photo "$JAR_AGENT" image/svg+xml "$(uuid)" "$PHOTO" | tail -1)
+[ "$code" = "415" ] || fail "an SVG content type should be 415, got $code"
+code=$(head -c 4300000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' -b "$JAR_AGENT" -H 'content-type: image/jpeg' -H "x-client-op: $(uuid)" -H "origin: $BASE_URL" --data-binary @- "$BASE_URL/api/listings/$id/photos")
+[ "$code" = "413" ] || fail "a body over 4 MB should be 413, got $code"
+pass "photo uploads: buyer 403, other agent 404, type mismatch 415, over 4 MB 413"
+
+photo_op="$(uuid)"
+up=$(upload_photo "$JAR_AGENT" image/jpeg "$photo_op" "$PHOTO"); up_code=$(echo "$up" | tail -1)
+[ "$up_code" = "201" ] || fail "photo upload should be 201, got $up_code: $up"
+photo=$(echo "$up" | head -n -1 | json_id); [ -n "$photo" ] || fail "no photo id in $up"
+again=$(upload_photo "$JAR_AGENT" image/jpeg "$photo_op" "$PHOTO"); again_code=$(echo "$again" | tail -1)
+[ "$again_code" = "200" ] || fail "a replayed photo op should be 200, got $again_code"
+[ "$(echo "$again" | head -n -1 | json_id)" = "$photo" ] || fail "a replayed photo op must return the first photo"
+n=$(curl -fsS -b "$JAR_AGENT" "$BASE_URL/api/listings/$id/photos" | grep -o '"id":"[^"]*"' | wc -l)
+[ "$n" = "1" ] || fail "the retried upload made $n photos"
+pass "the agent uploaded a photo; the retry returned the same one"
+
+for v in lg md sm; do
+  [ "$(status -b "$JAR_AGENT" "$BASE_URL/img/$photo/$v")" = "200" ] || fail "the agent should see their draft's $v variant"
+done
+h=$(headers -b "$JAR_AGENT" "$BASE_URL/img/$photo/md")
+[ "$(echo "$h" | header_of cache-control)" = "private, no-store" ] || fail "a draft photo should be private, no-store: $h"
+[ "$(echo "$h" | header_of content-type)" = "image/webp" ] || fail "a photo should be image/webp: $h"
+[ "$(echo "$h" | header_of x-content-type-options)" = "nosniff" ] || fail "a photo should carry nosniff: $h"
+curl -s -b "$JAR_AGENT" "$BASE_URL/img/$photo/lg" | grep -aq -e 'Exif' -e 'GPS' && fail "the stored photo still carries EXIF/GPS"
+[ "$(status "$BASE_URL/img/$photo/md")" = "404" ] || fail "a draft's photo should be 404 anonymously"
+[ "$(status -H 'if-none-match: *' "$BASE_URL/img/$photo/md")" = "404" ] || fail "a draft's photo should be 404 anonymously with If-None-Match"
+[ "$(status -b "$JAR_A" "$BASE_URL/img/$photo/md")" = "404" ] || fail "a draft's photo should be 404 for a buyer"
+[ "$(status "$BASE_URL/img/not-a-uuid/md")" = "404" ] || fail "a malformed photo id should be 404"
+pass "the draft's photo is the agent's alone, private and EXIF-free"
+
+# Publish needs a photo, a description of 200+ characters and a location. `confirmFar: true` is a 200 either way,
+# because it satisfies both branches that ask for it: no centroid for the ZIP (`listings.ts:361`) and coordinates
+# more than 5 mi from one (`:368`). Which branch runs changed when 14.3 loaded the centroid table -- these
+# coordinates are inside 78704, so neither fires now and the flag is a no-op here. That means **smoke no longer
+# covers the no-centroid branch**; it is covered by the integration tests, and #25 owns widening smoke.
+code=$(status -X POST -b "$JAR_AGENT" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"source":"manual","version":2,"lat":30.24235,"lng":-97.76899,"confirmFar":true}' "$BASE_URL/api/agent/listings/$id/location")
+[ "$code" = "200" ] || fail "setting the location should be 200, got $code"
+desc=$(printf 'A%.0s' $(seq 1 220))
+code=$(status -X PATCH -b "$JAR_AGENT" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"version\":3,\"description\":\"$desc\",\"status\":\"active\"}" "$BASE_URL/api/agent/listings/$id")
+[ "$code" = "200" ] || fail "publishing with a photo and a description should be 200, got $code"
+h=$(headers "$BASE_URL/img/$photo/md")
+[ "$(echo "$h" | header_of cache-control)" = "public, max-age=31536000, immutable" ] || fail "a public photo should be immutable: $h"
+etag=$(echo "$h" | header_of etag); [ -n "$etag" ] || fail "a public photo should have an ETag"
+[ "$(status -H "if-none-match: $etag" "$BASE_URL/img/$photo/md")" = "304" ] || fail "a matching If-None-Match should be 304"
+pass "the public photo is immutable and answers its ETag with 304"
+
+# Withdrawing stops the URL answering, on the 200 and the 304 path.
+code=$(status -X PATCH -b "$JAR_AGENT" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"version":4,"status":"withdrawn"}' "$BASE_URL/api/agent/listings/$id")
+[ "$code" = "200" ] || fail "withdrawing should be 200, got $code"
+[ "$(status "$BASE_URL/img/$photo/md")" = "404" ] || fail "a withdrawn listing's photo should be 404"
+[ "$(status -H "if-none-match: $etag" "$BASE_URL/img/$photo/md")" = "404" ] || fail "a withdrawn listing's photo should be 404 on the 304 path too"
+pass "a withdrawn listing's photo is 404 on both paths"
+
 # --- Cleanup: only drafts and withdrawn listings can be deleted ---
 code=$(status -X DELETE -b "$JAR_AGENT" -H "origin: $BASE_URL" "$BASE_URL/api/agent/listings/$id")
-[ "$code" = "204" ] || fail "deleting the draft should be 204, got $code"
+[ "$code" = "204" ] || fail "deleting the withdrawn listing should be 204, got $code"
 LISTING_IDS=()
-[ "$(status -b "$JAR_AGENT" "$BASE_URL/api/agent/listings/$id")" = "404" ] || fail "a deleted draft should be 404"
-pass "the agent deleted the draft"
+[ "$(status -b "$JAR_AGENT" "$BASE_URL/api/agent/listings/$id")" = "404" ] || fail "a deleted listing should be 404"
+[ "$(status -b "$JAR_AGENT" "$BASE_URL/img/$photo/md")" = "404" ] || fail "a deleted listing's photo should be 404"
+pass "the agent deleted the listing and its photo"
 
 echo "SMOKE PASS"

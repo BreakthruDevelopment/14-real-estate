@@ -365,6 +365,30 @@ HNSW limit). Limits: 32 texts per call, 8,000 characters each, 64,000 in total (
 - `AI_TIMEOUT_MS` (default 20000, max 22000) bounds every provider call, `generate()` and `embed()` alike.
 - Logs carry task, provider, model, count and latency, never the text.
 
+## AI listing description writer
+
+An agent can ask for a draft description of their own listing (`POST /api/agent/listings/[id]/description`). The
+server sends the listing's facts (type, beds, baths, size, year, price, features, city, state, ZIP), the agent's notes
+with addresses, emails, phone numbers and URLs filtered out. The street address field is never sent. The filter
+removes the listing's own address from the notes (exactly, without a trailing direction such as NE, and without its
+street-type suffix, ignoring punctuation style) and anything shaped like "number, street name, street type". It is a
+filter, not a guarantee, so a note that spells the address in a form it doesn't recognise can still carry part of it.
+Known gaps: a street name without the house number, a misspelt or differently abbreviated street name, a direction
+placed before the name in the note but after it in the stored address, and street types it doesn't list. Don't put the address in the notes. Up to
+3 of the listing's photos are also sent. The draft is only a draft: the agent edits and saves it, and the server checks it again on every save. The request carries an `x-client-op` UUID (one per intent, reused on a retry): a retry gets the first draft back with `replayed: true` and makes no second model call. Each listing is capped at 5 drafts a day, reserved in the database before the model call, so concurrent requests can't exceed it.
+
+- **Photos and Google's free tier.** Photos go to Gemini, as suggestions only ("seen in photos, confirm"). On the free
+  tier Google may use inputs to improve its products. **The demo uses stock or generated photos only**; do not upload
+  real client photos to a free-tier deployment.
+- **Server checks.** Numbers must match the facts or the agent's notes; feature highlights must name a selected
+  feature; photo suggestions must be photos that were sent; markup is stripped.
+- **Fair-housing screen: a screening aid, not legal advice.** Wording that states a preference or exclusion by a
+  protected class (for example "no kids", "adults only") is flagged on drafts, and **saving a title or description
+  that contains it is refused**, naming the phrase. It is not a copy of a HUD list: HUD withdrew its advertising word
+  list (24 CFR Part 109) in 1996, so the phrases are selected from the Fair Housing Act's seven protected classes
+  (`src/lib/fair-housing-terms.ts` records the sources and what was and was not verified). It misses wording it has no
+  phrase for, and ordinary terms such as "family room", "walk-in closet" and "master bedroom" are accepted.
+
 ## Data credits
 
 ZIP code centroids (`data/zcta-centroids.csv.gz`, served at `GET /api/geo/zip/[zip]` and used for radius search) are

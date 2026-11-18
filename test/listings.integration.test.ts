@@ -296,7 +296,7 @@ describe.skipIf(!url)("listings, favorites and inquiries (Postgres)", () => {
       const live = await L.updateListing(agent, l.id, { version: 1, status: "active" });
       await F.addFavorite(buyer, l.id);
       await I.createInquiry(buyer, { listingId: l.id, message: "hello", clientOpId: crypto.randomUUID() });
-      await sql`insert into description_draft (listing_id, agent_id, output, checks, facts_hash, provider, demo) values (${l.id}, ${agent.id}, '{}', '{}', 'h', 'demo', true)`;
+      await sql`insert into description_draft (listing_id, agent_id, output, checks, facts_hash, provider, demo, client_op_id) values (${l.id}, ${agent.id}, '{}', '{}', 'h', 'demo', true, ${crypto.randomUUID()})`;
       await expect(L.deleteListing(agent, l.id)).rejects.toMatchObject({ status: 409 });
       expect(await sql`select 1 from listing where id = ${l.id}`).toHaveLength(1);
 

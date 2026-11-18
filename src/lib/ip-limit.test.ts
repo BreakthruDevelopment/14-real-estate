@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { allowPublicRequest, clientIp, clientIpFromHeaders, limiterKey, resetPublicLimiter } from "./ip-limit";
+import { IMG_LIMIT_PER_MINUTE, PUBLIC_LIMIT_PER_MINUTE, allowPublicRequest, clientIp, clientIpFromHeaders, limiterKey, resetPublicLimiter } from "./ip-limit";
 
 describe("public per-IP limiter", () => {
   beforeEach(resetPublicLimiter);
@@ -58,5 +58,34 @@ describe("public per-IP limiter", () => {
     // The old window for 10.0.0.1 expired, so it counts from 1 again, and the sweep did not evict a live entry.
     for (let i = 0; i < 60; i++) expect(allowPublicRequest("10.0.0.1", 100_000)).toBe(true);
     expect(allowPublicRequest("10.0.0.1", 100_000)).toBe(false);
+  });
+
+  describe("namespaces", () => {
+    it("img hits do not consume the public allowance, and the reverse", () => {
+      // A listing page full of photos: far more than 60 image hits from one IP.
+      for (let i = 0; i < IMG_LIMIT_PER_MINUTE; i++) expect(allowPublicRequest("1.1.1.1", 1_000, IMG_LIMIT_PER_MINUTE, "img")).toBe(true);
+      expect(allowPublicRequest("1.1.1.1", 1_500, IMG_LIMIT_PER_MINUTE, "img")).toBe(false);
+      // The same IP still has its whole public allowance.
+      for (let i = 0; i < PUBLIC_LIMIT_PER_MINUTE; i++) expect(allowPublicRequest("1.1.1.1", 1_600)).toBe(true);
+      expect(allowPublicRequest("1.1.1.1", 1_700)).toBe(false);
+      // And the other way round: a spent public allowance leaves img alone.
+      resetPublicLimiter();
+      for (let i = 0; i < PUBLIC_LIMIT_PER_MINUTE + 1; i++) allowPublicRequest("2.2.2.2", 1_000);
+      expect(allowPublicRequest("2.2.2.2", 1_100, IMG_LIMIT_PER_MINUTE, "img")).toBe(true);
+    });
+
+    it("the default namespace is `public`, so a call that names it explicitly shares the counter", () => {
+      for (let i = 0; i < 60; i++) expect(allowPublicRequest("3.3.3.3", 1_000, 60, "public")).toBe(true);
+      expect(allowPublicRequest("3.3.3.3", 1_100)).toBe(false);
+    });
+
+    it("namespaces share the one 10,000-entry bound", () => {
+      for (let i = 0; i < 5_000; i++) allowPublicRequest(`10.0.${i >> 8}.${i & 255}`, 1_000 + i);
+      for (let i = 0; i < 5_000; i++) allowPublicRequest(`10.0.${i >> 8}.${i & 255}`, 7_000 + i, 600, "img");
+      // Full: the next new key evicts the oldest (10.0.0.0 under `public`), which therefore starts over.
+      expect(allowPublicRequest("203.0.113.9", 20_000, 600, "img")).toBe(true);
+      for (let i = 0; i < 60; i++) expect(allowPublicRequest("10.0.0.0", 21_000)).toBe(true);
+      expect(allowPublicRequest("10.0.0.0", 21_000)).toBe(false);
+    });
   });
 });

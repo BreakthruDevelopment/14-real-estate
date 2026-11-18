@@ -16,9 +16,18 @@ import { TooManyRequestsError } from "@/lib/errors";
  * to the next caller, because libvips cannot be cancelled: the pixels are still in memory, and admitting the next
  * image would put two decodes in flight — exactly what this gate exists to prevent.
  */
+type Waiter = { start: () => void; timer?: ReturnType<typeof setTimeout> };
+
+export type RunOptions = {
+  /** Give up on a queued call after this long. Time spent running does not count: this is the wait for a slot only. */
+  maxWaitMs?: number;
+  /** The rejection for a call that waited longer than `maxWaitMs`. */
+  onWaitTimeout?: () => Error;
+};
+
 export class Semaphore {
   private active = 0;
-  private readonly queue: (() => void)[] = [];
+  private readonly queue: Waiter[] = [];
 
   constructor(
     readonly concurrency: number,
@@ -38,7 +47,7 @@ export class Semaphore {
    * Runs `work` once a slot is free. Throws `TooManyRequestsError` straight away (as a rejected promise) when the
    * queue is already full, so the caller can answer 429 instead of waiting.
    */
-  run<T>(work: () => Promise<T>): Promise<T> {
+  run<T>(work: () => Promise<T>, opts: RunOptions = {}): Promise<T> {
     if (this.active >= this.concurrency && this.queue.length >= this.maxWaiting) {
       return Promise.reject(this.busyError());
     }
@@ -47,10 +56,22 @@ export class Semaphore {
       return this.settle(work);
     }
     return new Promise<T>((resolve, reject) => {
-      this.queue.push(() => {
-        // The slot was handed over by `release()`, which already counted it as active.
-        this.settle(work).then(resolve, reject);
-      });
+      const waiter: Waiter = {
+        start: () => {
+          clearTimeout(waiter.timer);
+          // The slot was handed over by `release()`, which already counted it as active.
+          this.settle(work).then(resolve, reject);
+        },
+      };
+      if (opts.maxWaitMs !== undefined) {
+        waiter.timer = setTimeout(() => {
+          // A waiter is only ever removed here or by `release()`, which clears this timer first, so it is still queued.
+          const at = this.queue.indexOf(waiter);
+          if (at >= 0) this.queue.splice(at, 1);
+          reject(opts.onWaitTimeout?.() ?? new TooManyRequestsError("Busy, try again shortly"));
+        }, opts.maxWaitMs);
+      }
+      this.queue.push(waiter);
     });
   }
 
@@ -65,7 +86,7 @@ export class Semaphore {
   private release(): void {
     const next = this.queue.shift();
     if (next) {
-      next(); // hands the slot straight over: `active` stays as it is
+      next.start(); // hands the slot straight over: `active` stays as it is
       return;
     }
     this.active -= 1;

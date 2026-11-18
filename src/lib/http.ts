@@ -5,12 +5,18 @@ import { BadRequestError, HttpError, PayloadTooLargeError } from "@/lib/errors";
 import { log } from "@/lib/log";
 import { safeErrorFields } from "@/lib/safe-error";
 
-export type ErrorInfo = { status: number; body: { error: string; issues?: unknown } };
+export type ErrorInfo = { status: number; body: { error: string; code?: string; issues?: unknown }; retryAfterSeconds?: number };
 
 /** Map known errors to a status and a client-safe body; never leak stack traces or internals. */
 export function errorInfo(err: unknown): ErrorInfo {
   if (err instanceof UnauthorizedError || err instanceof ForbiddenError || err instanceof HttpError) {
-    return { status: err.status, body: { error: err.message } };
+    const code = err instanceof HttpError ? err.code : undefined;
+    const retryAfterSeconds = err instanceof HttpError ? err.retryAfterSeconds : undefined;
+    return {
+      status: err.status,
+      body: { error: err.message, ...(code ? { code } : {}) },
+      ...(retryAfterSeconds ? { retryAfterSeconds } : {}),
+    };
   }
   if (err instanceof ZodError) {
     return {
@@ -31,8 +37,8 @@ export function errorInfo(err: unknown): ErrorInfo {
 }
 
 export function errorResponse(err: unknown): Response {
-  const { status, body } = errorInfo(err);
-  return Response.json(body, { status });
+  const { status, body, retryAfterSeconds } = errorInfo(err);
+  return Response.json(body, { status, ...(retryAfterSeconds ? { headers: { "Retry-After": String(retryAfterSeconds) } } : {}) });
 }
 
 /** Default cap for JSON bodies: small forms and upload requests. Pass a bigger `limit` per route if you need it. */

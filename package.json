@@ -14,7 +14,8 @@
     "db:migrate": "tsx scripts/migrate.mts",
     "db:seed": "tsx scripts/seed.mts",
     "fixtures:images": "tsx scripts/make-image-fixtures.mts",
-    "smoke": "bash scripts/smoke.sh"
+    "smoke": "bash scripts/smoke.sh",
+    "eval:description": "vitest run test/ai-evals.test.ts"
   },
   "dependencies": {
     "better-auth": "^1.7.15",

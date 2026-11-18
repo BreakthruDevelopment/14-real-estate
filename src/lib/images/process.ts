@@ -62,20 +62,43 @@ export const VARIANT_NAMES = ["lg", "md", "sm"] as const;
 /** An `lg` over this is re-encoded down the ladder; one that is still over is refused. */
 export const LG_MAX_BYTES = 400 * 1024;
 /** Tried in order after the first `lg` encode comes out too big. */
-export const LG_QUALITY_LADDER = [65, 55] as const;
+export const LG_QUALITY_LADDER = [60] as const;
 
-/** Whole-call budget: the wait for a slot plus the processing. The route's own budget is 10 s (spec). */
+/**
+ * The processing budget (spec: 10 s), measured from the moment the gate slot is acquired. It does **not** include
+ * the wait for the slot: a request that queued behind another image and then needed a normal amount of time is not
+ * a `timeout`. Overrunning it is a `timeout` (504): the work was attempted and was too slow.
+ */
 export const DEADLINE_MS = 10_000;
+
+/**
+ * How long a request may wait for the gate. Exceeding it is `queue_timeout` (503 with the `busy` code and
+ * `Retry-After`), never a 504: nothing was attempted, and retrying is the right advice.
+ *
+ * With `MAX_WAITING` 1 a request can only ever be behind one other image, so this must be no larger than the worst
+ * time one image can take, or a request that has waited longer than any image could run is not waiting but stuck
+ * (behind work that outlived its own deadline). 8 s is the start value from the 14.4 decision on issue 15.
+ *
+ * **Do not "fix" this to a smaller number without a measurement.** It is deliberately a little looser than the
+ * ~6.9 s worst case estimated for the Alpine replica, and that is a reviewed decision, not an oversight: the
+ * re-check against `scripts/bench-images.cjs` needs the Alpine image, 6.9 s has never been measured, and pinning a
+ * constant to an unmeasured estimate is worse than keeping the instructed value. It fails safe: a stuck waiter is
+ * told to retry at 8 s instead of ~7 s; it can't be mistaken for a processing timeout because it is below the 10 s
+ * processing deadline and has its own reason and status (503, not 504); `MAX_WAITING` is still 1; and the route's
+ * `maxDuration` of 30 s covers 8 s of waiting plus 10 s of processing. A follow-up ties it to the bench once the
+ * memory gate's number (issue 16) is trustworthy.
+ */
+export const QUEUE_WAIT_MS = 8_000;
 
 /**
  * One running, one waiting, everyone else told to come back.
  *
  * The spec prose reads "more than 2 waiting" and issue 14.2's "Done when" reads "one running, one waiting is
  * fine, the next is refused". Settled at 1, and not only because the issue is the contract: **a second waiter
- * could only ever produce a 504.** The deadline covers the queue wait as well as the processing, and a queued
- * image already takes up to 8.1 s of the 10 s budget at 0.25 vCPU (measured inside the Alpine image by
- * `scripts/bench-images.cjs`), so anything arriving behind one waiter has no budget left to be served in. A
- * deeper queue would buy nothing but a slower refusal and another 4 MB input buffer held in memory meanwhile.
+ * could only ever wait for two images.** A queued image already takes most of `QUEUE_WAIT_MS` at 0.25 vCPU
+ * (measured inside the Alpine image by `scripts/bench-images.cjs`), so anything arriving behind one waiter has
+ * no wait budget left to be served in. A deeper queue would buy nothing but a slower refusal and another 4 MB
+ * input buffer held in memory meanwhile.
  *
  * The spec prose is corrected separately in `ai-dev-os`.
  */
@@ -99,6 +122,7 @@ export const IMAGE_REJECTIONS = [
   "decode_failed",
   "too_large_after_encode",
   "busy",
+  "queue_timeout",
   "timeout",
 ] as const;
 export type ImageRejection = (typeof IMAGE_REJECTIONS)[number];
@@ -110,6 +134,7 @@ const REJECTION_STATUS: Record<ImageRejection, number> = {
   decode_failed: 422,
   too_large_after_encode: 422,
   busy: 429,
+  queue_timeout: 503,
   timeout: 504,
 };
 
@@ -120,6 +145,7 @@ const REJECTION_MESSAGE: Record<ImageRejection, string> = {
   decode_failed: "That photo couldn't be read. It may have been cut short during upload.",
   too_large_after_encode: "That photo is too detailed to store at this size. Try a smaller crop.",
   busy: "Another photo is being processed. Try again in a few seconds.",
+  queue_timeout: "The server is busy with other photos. Try again in a few seconds.",
   timeout: "That photo took too long to process. Try a smaller one.",
 };
 
@@ -129,14 +155,15 @@ const REJECTION_MESSAGE: Record<ImageRejection, string> = {
  * client. `retryAfterSeconds` is set for the refusals worth retrying.
  */
 export class ImageError extends HttpError {
-  readonly retryAfterSeconds?: number;
-
   constructor(
     readonly reason: ImageRejection,
     message: string = REJECTION_MESSAGE[reason],
   ) {
     super(REJECTION_STATUS[reason], message);
+    // Both ways of being told the gate is full share one client-facing code; the status says which (429 / 503).
+    this.code = reason === "queue_timeout" ? "busy" : reason;
     if (reason === "busy") this.retryAfterSeconds = 3;
+    if (reason === "queue_timeout") this.retryAfterSeconds = 5;
   }
 }
 
@@ -155,8 +182,10 @@ export const processImageInput = z.object({
   // `Uint8Array<ArrayBufferLike>`) is not assignable to, and every caller here hands over a Buffer.
   bytes: z.custom<Uint8Array>((v) => v instanceof Uint8Array, { message: "Image bytes are required" }),
   declaredType: text(100, { min: 1, minMessage: "A Content-Type is required" }),
-  /** Tests use a short deadline; routes leave it alone. */
+  /** Tests use a short deadline; routes leave it alone. Processing only: see `DEADLINE_MS`. */
   deadlineMs: z.number().int().positive().max(60_000).default(DEADLINE_MS),
+  /** Tests use a short wait cap; routes leave it alone. The wait for the gate only: see `QUEUE_WAIT_MS`. */
+  queueWaitMs: z.number().int().positive().max(60_000).default(QUEUE_WAIT_MS),
 });
 export type ProcessImageInput = z.input<typeof processImageInput>;
 
@@ -236,7 +265,7 @@ export function processImage(input: ProcessImageInput): Promise<ProcessedImage> 
   } catch (err) {
     return Promise.reject(err);
   }
-  const { bytes, deadlineMs } = parsed;
+  const { bytes, deadlineMs, queueWaitMs } = parsed;
   // `image/jpeg; charset=binary` is still a JPEG claim. Normalising the parameters away is not a loosening: the
   // value still has to be exactly one of the three types, and the bytes still have to agree with it.
   const declaredType = parsed.declaredType.split(";")[0].trim().toLowerCase();
@@ -252,15 +281,38 @@ export function processImage(input: ProcessImageInput): Promise<ProcessedImage> 
     return Promise.reject(reject("unsupported", startedAt, { declaredType, sniffed }));
   }
 
-  // The slot is held until `work` settles even if the caller below stops waiting: libvips cannot be cancelled, so
-  // handing the slot on while pixels are still in memory would put two decodes in flight.
   // A view, not a copy: at the 4 MB cap a copy would be 4 MB of peak RSS bought for nothing.
   const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const slotted = imageSemaphore.run(() => work(buf, sniffed, startedAt));
-  return withDeadline(slotted, deadlineMs, () => reject("timeout", startedAt, { declaredType }));
+
+  // Two separate clocks. The wait for the gate has its own cap (`queue_timeout`, 503); the processing deadline
+  // starts only once the slot is ours (`timeout`, 504).
+  //
+  // The slot is held until `work` settles even if the caller below stops waiting on a deadline: libvips cannot be
+  // cancelled, so handing the slot on while pixels are still in memory would put two decodes in flight. The
+  // promise is settled by whichever of the deadline and the work comes first; the other is a no-op.
+  return new Promise<ProcessedImage>((resolve, fail) => {
+    const queuedAt = Date.now();
+    imageSemaphore
+      .run(
+        async () => {
+          const startedAt = Date.now();
+          const waitedMs = startedAt - queuedAt;
+          const timer = setTimeout(() => fail(reject("timeout", startedAt, { declaredType, waitedMs })), deadlineMs);
+          try {
+            resolve(await work(buf, sniffed, startedAt, waitedMs));
+          } catch (err) {
+            fail(err);
+          } finally {
+            clearTimeout(timer);
+          }
+        },
+        { maxWaitMs: queueWaitMs, onWaitTimeout: () => reject("queue_timeout", queuedAt, { declaredType }) },
+      )
+      .catch(fail);
+  });
 }
 
-async function work(bytes: Buffer, format: ImageContentType, startedAt: number): Promise<ProcessedImage> {
+async function work(bytes: Buffer, format: ImageContentType, startedAt: number, waitedMs: number): Promise<ProcessedImage> {
   // Header only: no pixel buffer is allocated and `toBuffer()` is never reached. `limitInputPixels: false` here is
   // what lets us answer `too_many_pixels` with the real dimensions instead of libvips' generic message, and the
   // decode below sets the real limit.
@@ -323,6 +375,7 @@ async function work(bytes: Buffer, format: ImageContentType, startedAt: number):
     totalBytes,
     lgQuality: variants.lg.quality,
     ms,
+    waitedMs,
   });
   return {
     variants,
@@ -398,25 +451,4 @@ const formatName = (t: ImageContentType) => ({ "image/jpeg": "jpeg", "image/png"
 function reject(reason: ImageRejection, startedAt: number, fields: Record<string, unknown> = {}): ImageError {
   log.warn("image.rejected", { reason, ms: Date.now() - startedAt, ...fields });
   return new ImageError(reason);
-}
-
-/**
- * Resolves with `promise`, or rejects with `onTimeout()` after `ms`. The underlying work is left running: it owns
- * the gate slot and releases it when it really finishes. Its eventual rejection is swallowed here so a timed-out
- * call cannot surface later as an unhandled rejection.
- */
-function withDeadline<T>(promise: Promise<T>, ms: number, onTimeout: () => Error): Promise<T> {
-  return new Promise<T>((resolve, reject_) => {
-    const timer = setTimeout(() => reject_(onTimeout()), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject_(err);
-      },
-    );
-  });
 }
