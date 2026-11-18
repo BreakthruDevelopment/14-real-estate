@@ -14,6 +14,8 @@ export async function register() {
     const { migrateOnStart } = await import("./lib/db/migrate-on-start");
     await migrateOnStart();
   }
+  // ZIP centroids load once the schema exists. Not awaited; a failure is logged and never stops the server.
+  void import("./lib/geo/start").then((m) => m.startZipLoad());
   // Not awaited: while migrations retry in the background the server must still start.
   const { startJobs } = await import("./lib/jobs/start");
   startJobs().catch(async (err) => {

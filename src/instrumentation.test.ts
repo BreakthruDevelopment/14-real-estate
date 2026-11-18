@@ -2,18 +2,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const startJobs = vi.fn(async () => true);
 const migrateOnStart = vi.fn(async () => {});
+const startZipLoad = vi.fn(async () => {});
 
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.resetModules();
   startJobs.mockClear();
   migrateOnStart.mockClear();
+  startZipLoad.mockClear();
 });
 
 async function register(env: Record<string, string>) {
   for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
   vi.doMock("./lib/jobs/start", () => ({ startJobs }));
   vi.doMock("./lib/db/migrate-on-start", () => ({ migrateOnStart }));
+  vi.doMock("./lib/geo/start", () => ({ startZipLoad }));
   await (await import("./instrumentation")).register();
   await Promise.resolve();
 }
@@ -34,6 +37,7 @@ describe("register (instrumentation.ts)", () => {
     await register({ NEXT_RUNTIME: "nodejs", MIGRATE_ON_START: "true" });
     expect(migrateOnStart).toHaveBeenCalledOnce();
     expect(startJobs).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(startZipLoad).toHaveBeenCalledOnce());
   });
 
   it("does not wait for jobs: a rejected start is logged, not thrown", async () => {

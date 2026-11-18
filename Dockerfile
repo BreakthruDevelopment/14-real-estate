@@ -34,6 +34,8 @@ COPY --from=build --chown=app:app /app/.next/static ./.next/static
 COPY --from=build --chown=app:app /app/public ./public
 # Migrations, applied at startup when MIGRATE_ON_START=true (see src/instrumentation.ts).
 COPY --from=build --chown=app:app /app/drizzle ./drizzle
+# Static data: the ZIP centroid file the startup loader reads (14.10 adds the demo photos here too).
+COPY --from=build --chown=app:app /app/data ./data
 # AWS Lambda Web Adapter: lets this same image run on Lambda. It's an extension that
 # only activates inside Lambda; on every other platform it is inert.
 COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 /lambda-adapter /opt/extensions/lambda-adapter

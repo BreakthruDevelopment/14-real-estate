@@ -189,7 +189,7 @@ describe.skipIf(!url)("listings, favorites and inquiries (Postgres)", () => {
 
     it("moving the ZIP resets the location to the new ZIP's centroid, or clears it", async () => {
       const l = await create();
-      await sql`insert into zip_centroid (zip, lat, lng) values ('78701', 30.27, -97.74) on conflict (zip) do nothing`;
+      await sql`insert into zip_centroid (zip, lat, lng) values ('78701', 30.27, -97.74) on conflict (zip) do update set lat = excluded.lat, lng = excluded.lng`;
       expect(await L.updateListing(agent, l.id, { version: 1, zip: "78701" })).toMatchObject({ lat: 30.27, lng: -97.74, geoSource: "zip" });
       expect(await L.updateListing(agent, l.id, { version: 2, zip: "99998" })).toMatchObject({ lat: null, lng: null, geoSource: null });
     });

@@ -161,6 +161,14 @@ code=$(status -X PATCH -b "$JAR_AGENT" -H 'content-type: application/json' -H "o
 [ "$code" = "422" ] || fail "publishing without a photo should be 422, got $code"
 pass "stale version is 409; publishing without a photo is refused"
 
+# --- ZIP centroids (14.3) ---
+zip_json=$(curl -fsS "$BASE_URL/api/geo/zip/78704") || fail "GET /api/geo/zip/78704 failed (centroids not loaded?)"
+echo "$zip_json" | grep -q '"zip":"78704"' || fail "unexpected ZIP answer: $zip_json"
+echo "$zip_json" | grep -Eq '"lat":30\.2[0-9]*' || fail "78704 should be near latitude 30.24: $zip_json"
+[ "$(status "$BASE_URL/api/geo/zip/00000")" = "404" ] || fail "an unknown ZIP should be 404"
+[ "$(status "$BASE_URL/api/geo/zip/abcde")" = "404" ] || fail "a malformed ZIP should be 404"
+pass "ZIP centroid lookup"
+
 # --- Cleanup: only drafts and withdrawn listings can be deleted ---
 code=$(status -X DELETE -b "$JAR_AGENT" -H "origin: $BASE_URL" "$BASE_URL/api/agent/listings/$id")
 [ "$code" = "204" ] || fail "deleting the draft should be 204, got $code"
