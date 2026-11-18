@@ -3,32 +3,37 @@
 `zcta-centroids.csv.gz` holds one `zip,lat,lng` row per ZIP code (42,345 rows, 5-decimal degrees, gzipped CSV with a
 header line). `src/lib/geo/zip-load.ts` loads it into `zip_centroid` at startup when that table is empty.
 
-## What this file really is (read this before relying on it)
+## Source, licence and attribution
 
-**It is NOT the US Census ZCTA Gazetteer file that spec decision D9 asks for.** The Census file could not be fetched
-when this slice was built: `census.gov` and `www2.census.gov` are refused by the build environment's egress proxy.
-Nothing here was typed in or invented; the coordinates come unchanged (rounded to 5 decimals) from the file below.
+**Licence: Creative Commons Attribution 3.0 Unported (CC BY 3.0), <https://creativecommons.org/licenses/by/3.0/>.**
+Attribution is required, and the changes made are listed below.
 
-- **Source:** `https://raw.githubusercontent.com/midwire/free_zipcode_data/master/all_us_zipcodes.csv`
-  (the `midwire/free_zipcode_data` repository, branch `master`, fetched 2026-11-17). Columns: `code,city,state,county,area_code,lat,lon`.
+- **Origin:** the zip-to-coordinate data is from [GeoNames](https://www.geonames.org) (postal code data, which GeoNames
+  publishes under CC BY).
+- **Compiled by:** Midwire Technologies, LLC, in the `midwire/free_zipcode_data` repository
+  (`https://github.com/midwire/free_zipcode_data`). Its README, section "Data License", says: "The zipcode data is licensed
+  under a Creative Commons Attribution 3.0 Unported License, carried forward from GeoNames." Their code (not the data) is
+  MIT licensed, Copyright (c) 2017 Midwire Technologies, LLC (`LICENSE.md` in that repository).
+- **File used:** `https://raw.githubusercontent.com/midwire/free_zipcode_data/master/all_us_zipcodes.csv`, fetched
+  2026-11-17. Columns: `code,city,state,county,area_code,lat,lon`. The upstream README dates its original Census pull to
+  2011 and its move to GeoNames to 2017; this file is from the GeoNames era, so CC BY 3.0 applies.
 - **Source SHA-256** (the unmodified download, 2,072,181 bytes, 42,366 data rows):
   `808c04000fe8b1f26271ff4e8546cefdfe4daf1b1e490f507f1c5656ec903d35`
-- **Shipped file SHA-256** (`data/zcta-centroids.csv.gz`, built with `gzip -9n`):
+- **Shipped file SHA-256** (`data/zcta-centroids.csv.gz`):
   `6f8182119a7f7501a2b481dcff807f0769db0cdddcc3e69045df4b636ba4b874`
-- **Keyed by USPS ZIP code, not by ZCTA.** A ZCTA is the Census Bureau's area approximation of a ZIP's delivery area;
-  this file lists postal ZIPs, so it includes PO-box and unique-organisation ZIPs that have no ZCTA (42,345 rows against
-  about 33,800 ZCTAs). Coordinates are described by the upstream project as "estimated or zip-centroid", so they are
-  approximate centres, not Census internal points. Spot check: 78704 is 30.24068, -97.76883 here, within about
-  0.1 mile of the figure the template tests use. For a radius search of 1-50 miles that error is acceptable; it is
-  not survey-grade.
-- **Licence / provenance: not verified.** The repository has **no LICENSE file**. Its README says the data is licensed
-  under Creative Commons Attribution 3.0 (carried forward from GeoNames), and its gemspec says MIT for the code. It also
-  says the original 2011 data came from US Census sources and that GeoNames data was adopted from 2017. We could not
-  establish which of those this particular file is, so we do not assert a licence for it. ZIP-to-coordinate facts are
-  not creative expression, but the attribution requirement above (if the GeoNames route applies) is not met by us
-  beyond this note. **Replace this file with the Census 2020 Gazetteer (public domain) before treating the data as clean.**
+- **Rebuild it:** `python3 -I data/build-zip-centroids.py all_us_zipcodes.csv data/zcta-centroids.csv.gz`
+  reproduces the shipped file byte for byte.
 
-## Changes made to the source
+## What this file is, and is not
+
+**It is not the US Census ZCTA Gazetteer** that spec decision D9 names; the Census file could not be fetched when this
+slice was built (`census.gov` was refused by the build environment's egress proxy). Whether this data may stand in for
+it is a scope decision for the project owner. It is keyed by **USPS ZIP code**, not ZCTA, so it includes PO-box and
+unique-organisation ZIPs (42,345 rows against about 33,800 ZCTAs). Coordinates are described upstream as "estimated or
+zip-centroid": approximate centres, fine for a 1-50 mile radius search, not survey-grade. Spot check: 78704 is
+30.24068, -97.76883 here, within about 0.1 mile of the figure the template tests use.
+
+## Changes made to the source (CC BY requires this)
 
 - Dropped the `city`, `state`, `county` and `area_code` columns; renamed `lon` to `lng`.
 - Removed 12 rows with no coordinates and collapsed duplicate ZIPs (the source repeats some rows; no ZIP had two different coordinates).
@@ -36,8 +41,8 @@ Nothing here was typed in or invented; the coordinates come unchanged (rounded t
   wrong sign (for example 99545 at 162.89), so they are source errors: `17335, 56902, 56904, 56950, 73451, 81075,
   81403, 84081, 99545`. The loader applies the same bounds, so it would skip them too.
 
-## Replacing it with the Census file
+## Replacing it with the Census file (if the owner decides so)
 
 Download the 2020 ZCTA Gazetteer (`2020_Gaz_zcta_national.zip`, tab separated: `GEOID`, `INTPTLAT`, `INTPTLONG`),
-write `zip,lat,lng` rows, `gzip -9n` them to `zcta-centroids.csv.gz`, update the checksums above, and run
+write `zip,lat,lng` rows, `gzip -9n` them to `zcta-centroids.csv.gz`, update the checksums and the licence section above, and run
 `pnpm test` (the loader test checks the row count against the file, so nothing else changes).

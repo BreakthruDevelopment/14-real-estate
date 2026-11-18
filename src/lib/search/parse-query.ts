@@ -48,7 +48,7 @@ const TYPE_WORDS: [RegExp, PropertyType][] = [
   [/\btownhouses?\b|\btownhomes?\b/i, "townhouse"],
   [/\bcondos?\b|\bcondominiums?\b/i, "condo"],
   [/\bhouses?\b|\bhomes?\b/i, "house"],
-  [/\bland\b|\blots?\b/i, "land"],
+  [/\bland\b|\blot\b(?!\s+of\b)/i, "land"], // "lots of light" and "a lot of space" are not land
 ];
 
 export function parseQuery(input: string): ParsedQuery {

@@ -364,3 +364,12 @@ HNSW limit). Limits: 32 texts per call, 8,000 characters each, 64,000 in total (
   `demo: true` and the demo model name so vector spaces are never mixed.
 - `AI_TIMEOUT_MS` (default 20000, max 22000) bounds every provider call, `generate()` and `embed()` alike.
 - Logs carry task, provider, model, count and latency, never the text.
+
+## Data credits
+
+ZIP code centroids (`data/zcta-centroids.csv.gz`, served at `GET /api/geo/zip/[zip]` and used for radius search) are
+derived from [GeoNames](https://www.geonames.org) postal code data, compiled by Midwire Technologies, LLC
+([midwire/free_zipcode_data](https://github.com/midwire/free_zipcode_data)), and used under the
+[Creative Commons Attribution 3.0 Unported](https://creativecommons.org/licenses/by/3.0/) licence. We filtered and
+reformatted it; see [`data/README.md`](data/README.md) for the changes, checksums and rebuild script. The locations are
+approximate ZIP-area centres.

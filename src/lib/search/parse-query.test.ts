@@ -71,6 +71,13 @@ describe("parseQuery", () => {
     expect(parseQuery("")).toEqual({ filters: {}, residual: "" });
   });
 
+  it('does not read "lots of" or "a lot of" as land, but still reads a lot', () => {
+    expect(parseQuery("lots of natural light").filters.propertyType).toBeUndefined();
+    expect(parseQuery("lots of natural light").residual).toBe("lots of natural light");
+    expect(parseQuery("a lot of space").filters.propertyType).toBeUndefined();
+    expect(parseQuery("vacant lot").filters.propertyType).toBe("land");
+  });
+
   it("does not treat a bare 5-digit number without near/in as a ZIP", () => {
     expect(parseQuery("78704").filters.zip).toBeUndefined();
   });
