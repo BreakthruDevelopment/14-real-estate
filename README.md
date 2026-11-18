@@ -375,7 +375,7 @@ street-type suffix, ignoring punctuation style) and anything shaped like "number
 filter, not a guarantee, so a note that spells the address in a form it doesn't recognise can still carry part of it.
 Known gaps: a street name without the house number, a misspelt or differently abbreviated street name, a direction
 placed before the name in the note but after it in the stored address, and street types it doesn't list. Don't put the address in the notes. Up to
-3 of the listing's photos are also sent. The draft is only a draft: the agent edits and saves it, and the server checks it again on every save.
+3 of the listing's photos are also sent. The draft is only a draft: the agent edits and saves it, and the server checks it again on every save. The request carries an `x-client-op` UUID (one per intent, reused on a retry): a retry gets the first draft back with `replayed: true` and makes no second model call. Each listing is capped at 5 drafts a day, reserved in the database before the model call, so concurrent requests can't exceed it.
 
 - **Photos and Google's free tier.** Photos go to Gemini, as suggestions only ("seen in photos, confirm"). On the free
   tier Google may use inputs to improve its products. **The demo uses stock or generated photos only**; do not upload

@@ -295,9 +295,20 @@ export const descriptionDraft = pgTable(
     factsHash: text("facts_hash").notNull(),
     provider: text("provider").notNull(),
     demo: boolean("demo").notNull().default(false),
+    /** One id per request intent (`x-client-op`). A retry with the same id gets the first draft, never a second model call. */
+    clientOpId: uuid("client_op_id").notNull(),
+    /**
+     * `pending` is a slot reserved BEFORE the model call (it counts toward the per-listing daily cap, so concurrent requests
+     * can't overshoot it); `done` holds the draft. A pending row older than a minute is abandoned and may be replaced.
+     */
+    status: text("status", { enum: ["pending", "done"] }).notNull().default("done"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("description_draft_listing_idx").on(t.listingId, t.createdAt)],
+  (t) => [
+    index("description_draft_listing_idx").on(t.listingId, t.createdAt),
+    uniqueIndex("description_draft_client_op_uidx").on(t.listingId, t.clientOpId),
+    check("description_draft_status_chk", sql`${t.status} in ('pending', 'done')`),
+  ],
 );
 
 /** Cache of search-query embeddings, keyed by sha256(model + normalised text). No query text is stored. Pruned at 7 days. */

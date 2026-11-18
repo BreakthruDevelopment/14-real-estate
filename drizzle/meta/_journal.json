@@ -50,6 +50,13 @@
       "when": 1794778896149,
       "tag": "0006_photo-blob-storage",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794986244606,
+      "tag": "0007_description-draft-client-op",
+      "breakpoints": true
     }
   ]
 }

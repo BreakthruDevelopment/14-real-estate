@@ -9,6 +9,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { demoFixtures } from "@/lib/ai/demo";
 import { DEMO_BUNGALOW_LISTING_ID, DEMO_LIVING_ROOM_PHOTO_ID } from "@/lib/demo/ids";
 import { type TestActor, addPhoto, cleanup, facts, makeUser, seedCentroid } from "./helpers";
 
@@ -26,6 +27,8 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
   let resetEnvCache: typeof import("@/lib/env").resetEnvCache;
   const webp = readFileSync("test/fixtures/images/photo.webp");
 
+  /** A fresh request id per call, as a client would mint one per intent. */
+  const draft = (who: TestActor | null, id: string, input: unknown = {}, op: string = crypto.randomUUID()) => D.createDescriptionDraft(who, id, input, op);
   const create = async (o: Record<string, unknown> = {}, who = agent) => (await L.createListing(who, facts(o))).listing;
   const status = async (p: Promise<unknown>) => {
     try {
@@ -158,7 +161,7 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
   describe("the demo fixture against the seeded bungalow", () => {
     it("passes every check, photo included, for a photo inserted with DEMO_LIVING_ROOM_PHOTO_ID", async () => {
       await seedDemoBungalow();
-      const r = await D.createDescriptionDraft(agent, DEMO_BUNGALOW_LISTING_ID, {});
+      const r = await draft(agent, DEMO_BUNGALOW_LISTING_ID, {});
       expect(r.demo).toBe(true);
       expect(r.draft.flags).toEqual([]);
       expect(r.draft.dropped).toEqual({ highlights: [], photoSuggestions: [] });
@@ -172,7 +175,7 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
 
     it("and an agent's saved draft text goes through the same save check", async () => {
       await seedDemoBungalow();
-      const r = await D.createDescriptionDraft(agent, DEMO_BUNGALOW_LISTING_ID, {});
+      const r = await draft(agent, DEMO_BUNGALOW_LISTING_ID, {});
       const l = await L.getMyListing(agent, DEMO_BUNGALOW_LISTING_ID);
       expect((await L.updateListing(agent, l.id, { version: l.version, description: r.draft.description })).description).toBe(r.draft.description);
     });
@@ -180,7 +183,7 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
     it("is flagged honestly against a listing whose facts differ, and its photo suggestion is dropped", async () => {
       const l = await create({ beds: 5, yearBuilt: 1999, features: [] });
       await addPhoto(sql, l.id);
-      const r = await D.createDescriptionDraft(agent, l.id, {});
+      const r = await draft(agent, l.id, {});
       expect(r.draft.flags.map((f) => f.code)).toContain("unverified_number");
       expect(r.draft.dropped.highlights.map((h) => h.text)).toEqual(["Fenced yard"]);
       expect(r.draft.photoSuggestions).toEqual([]);
@@ -191,21 +194,21 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
   describe("who may ask", () => {
     it("404 for another agent's listing and for a missing id alike, 403 for a buyer", async () => {
       const l = await create();
-      expect(await status(D.createDescriptionDraft(agent2, l.id, {}))).toBe(404);
-      expect(await status(D.createDescriptionDraft(agent, crypto.randomUUID(), {}))).toBe(404);
-      expect(await status(D.createDescriptionDraft(agent, "not-a-uuid", {}))).toBe(404);
-      expect(await status(D.createDescriptionDraft(buyer, l.id, {}))).toBe(403);
-      expect(await status(D.createDescriptionDraft(null, l.id, {}))).toBe(401);
+      expect(await status(draft(agent2, l.id, {}))).toBe(404);
+      expect(await status(draft(agent, crypto.randomUUID(), {}))).toBe(404);
+      expect(await status(draft(agent, "not-a-uuid", {}))).toBe(404);
+      expect(await status(draft(buyer, l.id, {}))).toBe(403);
+      expect(await status(draft(null, l.id, {}))).toBe(401);
     });
 
     it("refuses photo ids that belong to another listing, even another agent's", async () => {
       const mine = await create();
       const theirs = await create({}, agent2);
       const foreignPhoto = await addPhoto(sql, theirs.id);
-      expect(await status(D.createDescriptionDraft(agent, mine.id, { photoIds: [foreignPhoto] }))).toBe(400);
-      expect(await status(D.createDescriptionDraft(agent, mine.id, { photoIds: ["nope"] }))).toBe(400);
-      expect(await status(D.createDescriptionDraft(agent, mine.id, { tone: "shouty" }))).toBe(400);
-      expect(await status(D.createDescriptionDraft(agent, mine.id, { photoIds: Array.from({ length: 4 }, () => crypto.randomUUID()) }))).toBe(400);
+      expect(await status(draft(agent, mine.id, { photoIds: [foreignPhoto] }))).toBe(400);
+      expect(await status(draft(agent, mine.id, { photoIds: ["nope"] }))).toBe(400);
+      expect(await status(draft(agent, mine.id, { tone: "shouty" }))).toBe(400);
+      expect(await status(draft(agent, mine.id, { photoIds: Array.from({ length: 4 }, () => crypto.randomUUID()) }))).toBe(400);
     });
   });
 
@@ -213,19 +216,19 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
     it("10 drafts per agent per hour (429), and the refused one is not recorded", async () => {
       const l = await create();
       for (let i = 0; i < 10; i++) await sql`insert into rate_event (user_id, kind) values (${agent.id}, 'ai')`;
-      expect(await status(D.createDescriptionDraft(agent, l.id, {}))).toBe(429);
+      expect(await status(draft(agent, l.id, {}))).toBe(429);
       expect((await sql`select count(*)::int n from description_draft where listing_id = ${l.id}`)[0].n).toBe(0);
     });
 
     it("5 drafts per listing per day (429); older drafts do not count, and only the newest 5 are kept", async () => {
       const l = await create();
       for (let i = 0; i < 5; i++) {
-        await D.createDescriptionDraft(agent, l.id, {});
+        await draft(agent, l.id, {});
         await sql`delete from rate_event where user_id = ${agent.id}`;
       }
-      expect(await status(D.createDescriptionDraft(agent, l.id, {}))).toBe(429);
+      expect(await status(draft(agent, l.id, {}))).toBe(429);
       await sql`update description_draft set created_at = now() - interval '2 days' where listing_id = ${l.id}`;
-      expect(await status(D.createDescriptionDraft(agent, l.id, {}))).toBe(200);
+      expect(await status(draft(agent, l.id, {}))).toBe(200);
       expect((await sql`select count(*)::int n from description_draft where listing_id = ${l.id}`)[0].n).toBe(5);
     });
 
@@ -234,8 +237,122 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
       resetEnvCache();
       const a = await create();
       const b = await create({}, agent2);
-      expect(await status(D.createDescriptionDraft(agent, a.id, {}))).toBe(200);
-      expect(await status(D.createDescriptionDraft(agent2, b.id, {}))).toBe(429);
+      expect(await status(draft(agent, a.id, {}))).toBe(200);
+      expect(await status(draft(agent2, b.id, {}))).toBe(429);
+    });
+  });
+
+  describe("retries are idempotent and the per-listing cap can't be overshot (#23)", () => {
+    /** A live-path model stub that takes `delayMs` to answer and counts how many times it was called. */
+    function slowModel(delayMs: number, fail = false) {
+      const state = { calls: 0 };
+      vi.stubGlobal("fetch", async () => {
+        state.calls++;
+        await new Promise((r) => setTimeout(r, delayMs));
+        if (fail) return new Response("boom", { status: 500 });
+        return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(demoFixtures["listing-description"]) }] } }] }));
+      });
+      vi.stubEnv("AI_PROVIDER", "gemini");
+      vi.stubEnv("GEMINI_API_KEY", "test-key-not-real");
+      vi.stubEnv("AI_FALLBACK_TO_DEMO", "false");
+      resetEnvCache();
+      return state;
+    }
+    const rows = async (listingId: string) => (await sql`select count(*)::int n from description_draft where listing_id = ${listingId}`)[0].n as number;
+    const used = async () => ({
+      hourly: (await sql`select count(*)::int n from rate_event where user_id = ${agent.id} and kind = 'ai'`)[0].n as number,
+      daily: (await sql`select coalesce(sum(count), 0)::int n from daily_usage where kind = 'ai' and day = (now() at time zone 'utc')::date`)[0].n as number,
+    });
+
+    it("the same x-client-op, sent again after the first answer, returns the FIRST draft: one model call, one row, one allowance", async () => {
+      const model = slowModel(0);
+      const l = await create();
+      const op = crypto.randomUUID();
+      const first = await draft(agent, l.id, {}, op);
+      const again = await draft(agent, l.id, {}, op);
+      expect(first.replayed).toBe(false);
+      expect(again.replayed).toBe(true);
+      expect(again.id).toBe(first.id);
+      expect(again.draft).toEqual(first.draft);
+      expect(again.blocked).toBe(first.blocked);
+      expect(model.calls).toBe(1);
+      expect(await rows(l.id)).toBe(1);
+      expect(await used()).toEqual({ hourly: 1, daily: 1 });
+      // A new intent is a new draft.
+      expect((await draft(agent, l.id, {}, crypto.randomUUID())).replayed).toBe(false);
+      expect(model.calls).toBe(2);
+    });
+
+    it("the same x-client-op sent while the first is still running waits and gets the first answer: one model call, one row", async () => {
+      const model = slowModel(500);
+      const l = await create();
+      const op = crypto.randomUUID();
+      const results = await Promise.all([draft(agent, l.id, {}, op), draft(agent, l.id, {}, op), draft(agent, l.id, {}, op), draft(agent, l.id, {}, op)]);
+      expect(model.calls).toBe(1);
+      expect(await rows(l.id)).toBe(1);
+      expect(new Set(results.map((r) => r.id)).size).toBe(1);
+      expect(results.filter((r) => !r.replayed)).toHaveLength(1);
+      expect(await used()).toEqual({ hourly: 1, daily: 1 });
+    });
+
+    it("a burst of different requests for one listing can't take it above 5 drafts a day, or make more than 5 model calls", async () => {
+      const model = slowModel(400);
+      const l = await create();
+      const outcomes = await Promise.all(Array.from({ length: 12 }, () => status(draft(agent, l.id, {}, crypto.randomUUID()))));
+      expect(outcomes.filter((s) => s === 200)).toHaveLength(5);
+      expect(outcomes.filter((s) => s === 429)).toHaveLength(7);
+      expect(model.calls).toBe(5);
+      expect(await rows(l.id)).toBe(5);
+      expect(await used()).toEqual({ hourly: 5, daily: 5 });
+    });
+
+    it("the app-wide AI_DAILY_CAP also holds under a burst across agents", async () => {
+      vi.stubEnv("AI_DAILY_CAP", "3");
+      const model = slowModel(300);
+      vi.stubEnv("AI_DAILY_CAP", "3");
+      resetEnvCache();
+      const a = await create();
+      const b = await create({}, agent2);
+      const outcomes = await Promise.all([a.id, a.id, a.id, b.id, b.id, b.id].map((id, i) => status(draft(i < 3 ? agent : agent2, id, {}, crypto.randomUUID()))));
+      expect(outcomes.filter((s) => s === 200)).toHaveLength(3);
+      expect(model.calls).toBe(3);
+    });
+
+    it("a failed model call frees the slot, and the same x-client-op can then be retried for real", async () => {
+      const l = await create();
+      const op = crypto.randomUUID();
+      const failing = slowModel(0, true);
+      expect(await status(draft(agent, l.id, {}, op))).toBeGreaterThanOrEqual(500);
+      expect(failing.calls).toBeGreaterThan(0);
+      expect(await rows(l.id)).toBe(0);
+      expect(await used()).toEqual({ hourly: 0, daily: 0 });
+      const working = slowModel(0);
+      const r = await draft(agent, l.id, {}, op);
+      expect(r.replayed).toBe(false);
+      expect(working.calls).toBe(1);
+      expect(await rows(l.id)).toBe(1);
+    });
+
+    it("a slot abandoned by a dead request (pending for over a minute) is taken over by a retry; a fresh pending one is waited on", async () => {
+      const l = await create();
+      const stale = crypto.randomUUID();
+      await sql`insert into description_draft (listing_id, agent_id, output, checks, facts_hash, provider, client_op_id, status, created_at)
+        values (${l.id}, ${agent.id}, '{}', '{}', '', '', ${stale}, 'pending', now() - interval '2 minutes')`;
+      const model = slowModel(0);
+      const r = await draft(agent, l.id, {}, stale);
+      expect(r.replayed).toBe(false);
+      expect(model.calls).toBe(1);
+      expect(await rows(l.id)).toBe(1);
+      expect((await sql`select status from description_draft where listing_id = ${l.id}`)[0].status).toBe("done");
+    });
+
+    it("requires a UUID op id, and the database enforces one draft per (listing, op id)", async () => {
+      const l = await create();
+      expect(await status(draft(agent, l.id, {}, "not-a-uuid"))).toBe(400);
+      const op = crypto.randomUUID();
+      const ins = () => sql`insert into description_draft (listing_id, agent_id, output, checks, facts_hash, provider, client_op_id) values (${l.id}, ${agent.id}, '{}', '{}', 'h', 'p', ${op})`;
+      await ins();
+      await expect(ins()).rejects.toThrow(/description_draft_client_op_uidx/);
     });
   });
 
@@ -262,8 +379,8 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
       const photos = [await addPhoto(sql, l.id, 0), await addPhoto(sql, l.id, 1), await addPhoto(sql, l.id, 2), await addPhoto(sql, l.id, 3)];
       const bodies = stubGemini(() => new Response("boom", { status: 500 }));
 
-      expect(await status(D.createDescriptionDraft(agent, l.id, { photoIds: photos }))).toBe(400); // 4 photos
-      expect(await status(D.createDescriptionDraft(agent, l.id, { photoIds: photos.slice(0, 3), tone: "concise" }))).toBeGreaterThanOrEqual(500);
+      expect(await status(draft(agent, l.id, { photoIds: photos }))).toBe(400); // 4 photos
+      expect(await status(draft(agent, l.id, { photoIds: photos.slice(0, 3), tone: "concise" }))).toBeGreaterThanOrEqual(500);
       expect(bodies.length).toBeGreaterThan(0);
       const sent = bodies[0];
       for (const secret of ["Quillback", "4417", agent.id, "Sentinel Title", l.id, "555-0142", "brokerage.example", "123 Main"]) {
@@ -285,7 +402,7 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
       await addPhoto(sql, l.id, 0);
       await addPhoto(sql, l.id, 1);
       const bodies = stubGemini(() => new Response("boom", { status: 500 }));
-      await status(D.createDescriptionDraft(agent, l.id, {}));
+      await status(draft(agent, l.id, {}));
       expect(bodies[0].match(/inlineData/g)).toHaveLength(1);
     });
   });
