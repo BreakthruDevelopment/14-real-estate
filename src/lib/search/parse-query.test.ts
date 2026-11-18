@@ -78,6 +78,14 @@ describe("parseQuery", () => {
     expect(parseQuery("vacant lot").filters.propertyType).toBe("land");
   });
 
+  it("still reads the plural lots as land, and the 'of' check survives spacing and case", () => {
+    expect(parseQuery("two building lots").filters.propertyType).toBe("land");
+    expect(parseQuery("corner lots available").filters.propertyType).toBe("land");
+    expect(parseQuery("lots  of   light").filters.propertyType).toBeUndefined(); // multiple spaces
+    expect(parseQuery("LOTS OF light").filters.propertyType).toBeUndefined(); // case
+    expect(parseQuery("lots\nof light").filters.propertyType).toBeUndefined(); // newline
+  });
+
   it("does not treat a bare 5-digit number without near/in as a ZIP", () => {
     expect(parseQuery("78704").filters.zip).toBeUndefined();
   });
