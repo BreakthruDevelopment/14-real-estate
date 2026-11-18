@@ -54,9 +54,11 @@ const EMAIL = /[^\s@<>()]+@[^\s@<>()]+\.[A-Za-z]{2,}/g;
 const URL_LIKE = /\bhttps?:\/\/\S+|\bwww\.\S+/gi;
 const PHONE = /(?<![\w])(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?![\w])/g;
 const STREET_WORDS =
-  "st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|ln|lane|ct|court|way|pl|place|ter|terrace|cir|circle|pkwy|parkway|hwy|highway|trl|trail|loop";
+  "st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|ln|lane|ct|court|way|pl|place|ter|terrace|cir|circle|pkwy|parkway|hwy|highway|trl|trail|loop|ridge|cove|bend|glen|grove|plaza|crossing|alley|hollow";
 const STREET = new RegExp(`\\b\\d{1,6}\\s+(?:[\\p{L}\\p{N}.'-]+\\s+){0,4}(?:${STREET_WORDS})\\b\\.?`, "giu");
-const UNIT = /\b(?:apt|apartment|unit|suite|ste)\.?\s*#?\s*[A-Za-z0-9-]+|#\s?\d+[A-Za-z]?\b/gi;
+// A unit marker only when a number follows ("unit 4B", "Apt. #12", "ste 200"), and only as a whole word: "steel",
+// "steps", "sterling", "apartment complex" and "unit has a new roof" stay. A bare letter ("unit A") is not removed.
+const UNIT = /\b(?:apt|apartment|unit|suite|ste)\b\.?\s*#?\s*(?=[A-Za-z]?-?\d)[A-Za-z0-9-]+|#\s?\d+[A-Za-z]?\b/gi;
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -74,9 +76,16 @@ export function foldPunctuation(s: string): string {
 }
 
 /**
- * Agent notes are free text and may hold the street address, a phone number or an email. Strip those before the notes
- * leave the server. `addressLine` is the listing's own address, removed wherever it appears (apostrophe and dash style,
- * case and spacing do not matter; an apostrophe may also be missing).
+ * Agent notes are free text and may hold the street address, a phone number or an email. This removes, from the notes
+ * only (the address field itself is never sent):
+ *  1. the listing's own address, wherever it appears, and the same address without its street-type suffix ("4417
+ *     Quillback Ridge" for "4417 Quillback Ridge Dr"); punctuation-folded, so apostrophe and dash style, case and spacing
+ *     don't matter and an apostrophe may be missing;
+ *  2. a fallback pattern for any "number, up to four words, street type" (it errs toward removing, so it can eat a
+ *     phrase like "5 minute walk to the trail");
+ *  3. emails, URLs, phone numbers and unit numbers.
+ * This is a filter, not a guarantee. A note that writes the address in a form neither layer recognises (a different
+ * street name spelling, no house number, an abbreviation we don't list) can still carry part of it.
  */
 export function redactNotes(notes: string, addressLine?: string): string {
   let out = foldPunctuation(notes.replace(/\0/g, ""));
@@ -84,6 +93,12 @@ export function redactNotes(notes: string, addressLine?: string): string {
   if (address.length >= 3) {
     const pattern = escapeRe(address).replace(/'/g, "'?").replace(/\s+/g, "\\s+");
     out = out.replace(new RegExp(pattern, "giu"), "[removed]");
+    // The same address without its street-type suffix ("... Ridge Dr" -> "... Ridge"), when what is left still starts with the number.
+    const parts = address.split(/\s+/);
+    if (parts.length >= 3 && new RegExp(`^(?:${STREET_WORDS})\\.?$`, "i").test(parts[parts.length - 1]) && /^\d/.test(parts[0])) {
+      const base = escapeRe(parts.slice(0, -1).join(" ")).replace(/'/g, "'?").replace(/\s+/g, "\\s+");
+      out = out.replace(new RegExp(`${base}\\b`, "giu"), "[removed]");
+    }
   }
   return out
     .replace(EMAIL, "[removed]")

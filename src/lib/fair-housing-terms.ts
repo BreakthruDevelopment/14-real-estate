@@ -52,8 +52,11 @@
  *   statutory exemption (42 U.S.C. § 3607(b)).
  * - "adult community": same exemption.
  * - phrases that depend on the surrounding sentence (a mosque or school "nearby", "safe neighborhood", "exclusive").
- * - shared-living sex preferences are an exemption (42 U.S.C. § 3603(b)(2)); the sex phrases below are flagged anyway
- *   because this app lists whole dwellings.
+ * - sex preferences for shared living (a room in an owner-occupied home). 42 U.S.C. § 3603(b) opens "Nothing in
+ *   section 3604 of this title (other than subsection (c)) shall apply to ...", so subsection (c), the ADVERTISING
+ *   prohibition this list is built on, is expressly carved OUT of those exemptions: they do not make a "women only"
+ *   advertisement lawful. (Do not read § 3603(b) as an advertising exemption.) The sex phrases below are flagged
+ *   because of § 3604(c) itself. Statute text as checked by the coordinator, not read by the builder.
  */
 
 export const CATEGORIES = ["race", "color", "national_origin", "religion", "sex", "familial_status", "disability"] as const;

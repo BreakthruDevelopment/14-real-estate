@@ -60,6 +60,11 @@ describe("fair-housing term data", () => {
   it("never uses HUD's 1995 memo as a reason to FLAG anything (it says what should not ground complaints)", () => {
     for (const t of FLAGGED_TERMS) expect(t.sources, t.phrase).not.toContain("HUD_1995");
   });
+  it("does not cite 42 U.S.C. 3603(b) as an advertising exemption, and records its carve-out of 3604(c)", async () => {
+    const src = (await import("node:fs")).readFileSync("src/lib/fair-housing-terms.ts", "utf8");
+    expect(src).not.toMatch(/exemption \(42 U\.S\.C\. § 3603\(b\)\(2\)\)/);
+    expect(src).toMatch(/other than subsection \(c\)/);
+  });
   it("never cites the removed 24 CFR Part 109 as an authority", () => {
     for (const s of Object.values(SOURCES)) expect(`${s.doc} ${s.cite}`).not.toMatch(/109\.20|Part 109/);
   });
@@ -151,6 +156,17 @@ describe("fair-housing screen: accepted (the false-positive class)", () => {
   it("still flags a phrase inside one sentence, across commas, line wraps and punctuation that is not a sentence end", () => {
     for (const text of ["Sorry, no kids.", "No kids!", "Rule: no\nkids allowed", "no,  kids", "NO-KIDS", "no.kids", "Quiet. Adults only; call me."]) {
       expect(findFairHousingTerms(text).length, text).toBeGreaterThan(0);
+    }
+  });
+
+  it("treats every line-ending form alike: a blank line is a barrier, a single line break is not", () => {
+    for (const blank of ["\n\n", "\r\n\r\n", "\r\r", "\u2028\u2028", "\u2029", "\n \t\n", "\u0085\u0085"]) {
+      expect(findFairHousingTerms(`Pets: no${blank}Children welcome`), JSON.stringify(blank)).toEqual([]);
+      expect(findFairHousingTerms(`Pets: no${blank}Kids welcome. Growing${blank}family of four`), JSON.stringify(blank)).toEqual([]);
+    }
+    for (const wrap of ["\n", "\r\n", "\r", "\u2028"]) {
+      expect(findFairHousingTerms(`Plenty of room for a growing${wrap}family of four`).length, JSON.stringify(wrap)).toBe(1);
+      expect(findFairHousingTerms(`Sorry, no${wrap}kids`).length, JSON.stringify(wrap)).toBe(1);
     }
   });
 

@@ -92,6 +92,20 @@ describe("what reaches the model", () => {
     expect(redactNotes("Near 14 Pe\u00f1a Road")).not.toMatch(/Pe\u00f1a/);
   });
 
+  it("keeps words that merely start with a unit marker, and removes real unit numbers", () => {
+    const keep = "Stainless steel appliances, steps to the park, stepped entry, sterling fixtures, stellar light, apartment complex nearby, the unit has a new roof, ste is not a word";
+    expect(redactNotes(keep)).toBe(keep);
+    for (const unit of ["unit 4B", "Apt. #12", "apt 3", "Suite 200", "ste 200", "Apartment 5C"]) {
+      expect(redactNotes(`Call about ${unit} today`), unit).toBe("Call about [removed] today");
+    }
+  });
+
+  it("removes the stored address when a note drops its street-type suffix, and the street type list covers ridge and cove", () => {
+    expect(redactNotes("Lockbox at 4417 Quillback Ridge.", STREET)).not.toMatch(/4417|Quillback/);
+    expect(redactNotes("Lockbox at 4417 quillback ridge, gate code 12", STREET)).not.toMatch(/4417|quillback/i);
+    expect(redactNotes("Meet at 88 Oak Cove or 7 Pine Ridge")).not.toMatch(/Oak|Pine/);
+  });
+
   it("keeps ordinary notes, including numbers that are not phones", () => {
     expect(redactNotes("Roof replaced 2021, 3 bedrooms, new HVAC 2023, 0.25 acre")).toBe("Roof replaced 2021, 3 bedrooms, new HVAC 2023, 0.25 acre");
   });

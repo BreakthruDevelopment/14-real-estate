@@ -369,8 +369,11 @@ HNSW limit). Limits: 32 texts per call, 8,000 characters each, 64,000 in total (
 
 An agent can ask for a draft description of their own listing (`POST /api/agent/listings/[id]/description`). The
 server sends the listing's facts (type, beds, baths, size, year, price, features, city, state, ZIP), the agent's notes
-with addresses, emails, phone numbers and URLs removed, and up to 3 of the listing's photos. It never sends the street
-address. The draft is only a draft: the agent edits and saves it, and the server checks it again on every save.
+with addresses, emails, phone numbers and URLs filtered out. The street address field is never sent. The filter
+removes the listing's own address from the notes (exactly, and without its street-type suffix, ignoring punctuation
+style) and anything shaped like "number, street name, street type"; it is a filter, not a guarantee, so a note that
+spells the address in a form it doesn't recognise can still carry part of it. Don't put the address in the notes. Up to
+3 of the listing's photos are also sent. The draft is only a draft: the agent edits and saves it, and the server checks it again on every save.
 
 - **Photos and Google's free tier.** Photos go to Gemini, as suggestions only ("seen in photos, confirm"). On the free
   tier Google may use inputs to improve its products. **The demo uses stock or generated photos only**; do not upload
