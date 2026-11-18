@@ -65,9 +65,11 @@ const SENTENCE_BARRIER = "\u0001";
 export function toWords(input: string, opts: { barriers?: boolean } = {}): string[] {
   let folded = input
     .normalize("NFKC")
-    // Every line ending is a plain "\n" first (CRLF from a Windows clipboard, CR, NEL, VT, FF, U+2028); U+2029 is a paragraph break.
+    // Every line ending is a plain "\n" first (CRLF from a Windows clipboard, CR, NEL, U+2028); U+2029 is a paragraph break.
+    // VT and FF are NOT line endings here: they are in-line whitespace, and a barrier suppresses a hit, so counting
+    // "VT VT" as a blank line would hide "no<VT><VT>kids". (Tested.)
     .replace(/\u2029/g, "\n\n")
-    .replace(/\r\n?|[\u0085\u2028\u000b\u000c]/g, "\n")
+    .replace(/\r\n?|[\u0085\u2028]/g, "\n")
     .replace(/[\u00ad\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g, "")
     .normalize("NFD")
     .replace(/\p{M}+/gu, "")

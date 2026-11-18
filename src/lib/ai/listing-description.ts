@@ -55,6 +55,8 @@ const URL_LIKE = /\bhttps?:\/\/\S+|\bwww\.\S+/gi;
 const PHONE = /(?<![\w])(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?![\w])/g;
 const STREET_WORDS =
   "st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|ln|lane|ct|court|way|pl|place|ter|terrace|cir|circle|pkwy|parkway|hwy|highway|trl|trail|loop|ridge|cove|bend|glen|grove|plaza|crossing|alley|hollow";
+const TYPE_WORD = new RegExp(`^(?:${STREET_WORDS})\\.?$`, "i");
+const DIRECTIONAL = /^(?:n|s|e|w|ne|nw|se|sw|north|south|east|west|northeast|northwest|southeast|southwest)$/i;
 const STREET = new RegExp(`\\b\\d{1,6}\\s+(?:[\\p{L}\\p{N}.'-]+\\s+){0,4}(?:${STREET_WORDS})\\b\\.?`, "giu");
 // A unit marker only when a number follows ("unit 4B", "Apt. #12", "ste 200"), and only as a whole word: "steel",
 // "steps", "sterling", "apartment complex" and "unit has a new roof" stay. A bare letter ("unit A") is not removed.
@@ -78,8 +80,9 @@ export function foldPunctuation(s: string): string {
 /**
  * Agent notes are free text and may hold the street address, a phone number or an email. This removes, from the notes
  * only (the address field itself is never sent):
- *  1. the listing's own address, wherever it appears, and the same address without its street-type suffix ("4417
- *     Quillback Ridge" for "4417 Quillback Ridge Dr"); punctuation-folded, so apostrophe and dash style, case and spacing
+ *  1. the listing's own address, wherever it appears, and the same address without a trailing directional ("500 Oak St")
+ *     and without its street-type suffix ("4417 Quillback Ridge" for "4417 Quillback Ridge Dr", "500 Oak" for "500 Oak
+ *     St NE"), never inside a longer number; punctuation-folded, so apostrophe and dash style, case and spacing
  *     don't matter and an apostrophe may be missing;
  *  2. a fallback pattern for any "number, up to four words, street type" (it errs toward removing, so it can eat a
  *     phrase like "5 minute walk to the trail");
@@ -91,13 +94,21 @@ export function redactNotes(notes: string, addressLine?: string): string {
   let out = foldPunctuation(notes.replace(/\0/g, ""));
   const address = addressLine ? foldPunctuation(addressLine).trim() : "";
   if (address.length >= 3) {
-    const pattern = escapeRe(address).replace(/'/g, "'?").replace(/\s+/g, "\\s+");
-    out = out.replace(new RegExp(pattern, "giu"), "[removed]");
-    // The same address without its street-type suffix ("... Ridge Dr" -> "... Ridge"), when what is left still starts with the number.
-    const parts = address.split(/\s+/);
-    if (parts.length >= 3 && new RegExp(`^(?:${STREET_WORDS})\\.?$`, "i").test(parts[parts.length - 1]) && /^\d/.test(parts[0])) {
-      const base = escapeRe(parts.slice(0, -1).join(" ")).replace(/'/g, "'?").replace(/\s+/g, "\\s+");
-      out = out.replace(new RegExp(`${base}\\b`, "giu"), "[removed]");
+    // Not inside a longer token: "417 Oak" must not match inside "2417 Oak".
+    const at = (words: string) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(words).replace(/'/g, "'?").replace(/\s+/g, "\\s+")}(?![\\p{L}\\p{N}])`, "giu");
+    out = out.replace(at(address), "[removed]");
+    // The same address without a trailing directional ("500 Oak St NE" -> "500 Oak St") and then without its street-type
+    // suffix ("... Oak"), when what is left still starts with the house number and has a street name.
+    const words = address.split(/\s+/);
+    if (/^\d/.test(words[0])) {
+      const isDirectional = (w: string) => DIRECTIONAL.test(w.replace(/\./g, ""));
+      const isType = (w: string) => TYPE_WORD.test(w);
+      if (words.length >= 3 && isDirectional(words[words.length - 1])) words.pop();
+      if (words.length >= 2) out = out.replace(at(words.join(" ")), "[removed]");
+      if (words.length >= 3 && isType(words[words.length - 1])) {
+        words.pop();
+        out = out.replace(at(words.join(" ")), "[removed]");
+      }
     }
   }
   return out

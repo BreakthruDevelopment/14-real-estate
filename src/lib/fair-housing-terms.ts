@@ -50,7 +50,9 @@
  * - bare "family", "families", "kids", "children", "church", "master", "walk": all appear in ordinary copy.
  * - age terms ("seniors", "55+", "retirees"): age is not a federal class, and "housing for older persons" is a
  *   statutory exemption (42 U.S.C. § 3607(b)).
- * - "adult community": same exemption.
+ * - "adult community": same exemption. NOTE: the text of § 3607(b) has not been read by anyone on this project (law.cornell.edu
+ *   and uscode.house.gov were not reachable); it is cited from recall. It only supports leaving age terms out, which
+ *   "age is not a federal protected class" already does on its own.
  * - phrases that depend on the surrounding sentence (a mosque or school "nearby", "safe neighborhood", "exclusive").
  * - sex preferences for shared living (a room in an owner-occupied home). 42 U.S.C. § 3603(b) opens "Nothing in
  *   section 3604 of this title (other than subsection (c)) shall apply to ...", so subsection (c), the ADVERTISING

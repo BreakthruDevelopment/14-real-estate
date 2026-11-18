@@ -170,6 +170,12 @@ describe("fair-housing screen: accepted (the false-positive class)", () => {
     }
   });
 
+  it("VT and FF are in-line whitespace, never blank lines: widening the barrier class hides hits, so each of these must still be flagged", () => {
+    for (const between of ["\u000b\u000b", "\f\f", "\r\u000b", "\u000b\u200b\u000b", "\f\t\f", "\u000b", "\f"]) {
+      expect(findFairHousingTerms(`Sorry, no${between}kids`).length, JSON.stringify(between)).toBe(1);
+    }
+  });
+
   it("does not refuse paint and trim copy that says 'white only'", () => {
     expect(findFairHousingTerms("White only cabinets and trim; black only hardware")).toEqual([]);
     expect(findFairHousingTerms("whites only").map((h) => h.phrase)).toEqual(["whites only"]);

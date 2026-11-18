@@ -106,6 +106,21 @@ describe("what reaches the model", () => {
     expect(redactNotes("Meet at 88 Oak Cove or 7 Pine Ridge")).not.toMatch(/Oak|Pine/);
   });
 
+  it("removes the stored address when a note drops the street type and keeps the directional, and vice versa", () => {
+    const stored = "500 Oak St NE";
+    for (const note of ["Meet me at 500 Oak NE, go round the back.", "Meet me at 500 Oak St, go round the back.", "Meet me at 500 Oak, go round the back.", "Meet me at 500 oak st n.e. please", "Meet me at 500 Oak St Northeast please"]) {
+      expect(redactNotes(note, stored), note).not.toMatch(/500|Oak/i);
+    }
+    expect(redactNotes("Come to 12 Pine Rd. SW today", "12 Pine Rd. SW")).not.toMatch(/Pine/);
+  });
+
+  it("does not match the stored address inside a longer number (no '2[removed]')", () => {
+    const out = redactNotes("Parcel 2417 Quillback Ridge and 417 Quillback Ridge", "417 Quillback Ridge Dr");
+    expect(out).not.toMatch(/2\[removed\]/);
+    expect(redactNotes("Lot 2417 Quillback", "417 Quillback Ridge Dr")).toBe("Lot 2417 Quillback");
+    expect(redactNotes("Lot 2417 Quillback Ridge Dr, not 417 Quillback Ridge Dr", "417 Quillback Ridge Dr")).not.toMatch(/2\[removed\]/);
+  });
+
   it("keeps ordinary notes, including numbers that are not phones", () => {
     expect(redactNotes("Roof replaced 2021, 3 bedrooms, new HVAC 2023, 0.25 acre")).toBe("Roof replaced 2021, 3 bedrooms, new HVAC 2023, 0.25 acre");
   });
