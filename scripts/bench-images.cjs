@@ -20,12 +20,20 @@
  *     back to `VmHWM` alone; it does not crash and it does not pretend.
  *
  * What the number is, and is not. On glibc, `MALLOC_ARENA_MAX=1` with low trim and mmap thresholds makes the
- * allocator behave like musl, and the two measurements then agree. That agreement is **not** two independent
- * confirmations: both measure the same physical quantity, the live working set, so one allocator's behaviour
- * cannot be cross-checked against the other's. What it shows is that the figure is a property of the workload
- * rather than of one allocator's retention. It does not show that a process which is also holding a Next.js heap
- * and serving traffic retains no more than this one does; that is checked against the running server (see
- * `SERVER_BASELINE_MB`), not assumed from here.
+ * allocator behave like musl. Run that way, `VmHWM` and the cgroup peak both measure the same live working set, so
+ * their agreement is **not** two independent confirmations of anything: it is one quantity read twice. The
+ * allocator does change the figure a great deal (the same workload read about 426 MB on default glibc and about
+ * 208 MB musl-like, which is retention, not workload), so a number is only meaningful for the allocator it was
+ * taken on, and the one that counts is the one measured inside the Alpine image. Nor does any of this show that a
+ * process also holding a Next.js heap and serving traffic retains no more than this one does; that is covered by
+ * `SERVER_BASELINE_MB` and the headroom described there, not assumed from here.
+ *
+ * Why the gate takes the larger of the two deltas and never replaces one with the other. The cgroup counter
+ * (`memory.max_usage_in_bytes` on v1, and `memory.peak` on a cgroup that has already run other work) is a monotone
+ * high-water mark for the whole cgroup, not for this process, so its *delta* is structurally understated by
+ * whatever the cgroup peaked at earlier: one real run read `delta, cgroup: 0.0 MB` with the counter already at
+ * 5760 MB. A `min`, or the cgroup figure alone, would have reported an image delta of 0 and passed. `max()` makes
+ * the cgroup reading purely additive: it can raise the gate's figure and can never lower it.
  *
  * What it runs: the worst inputs `processImage()` will accept, in pairs, which is the deepest the gate ever
  * gets at the shipped setting (`MAX_CONCURRENT` 1, `MAX_WAITING` 1: one decoding, one queued). Rounds repeat
@@ -38,6 +46,26 @@
  */
 const fs = require("node:fs");
 const path = require("node:path");
+
+/**
+ * Every numeric knob goes through this, so a malformed value is a loud failure rather than a quiet one. A bad
+ * value used to become `NaN`, and every comparison against `NaN` is false, so both budget checks stopped firing and
+ * the gate exited 0 while printing "against NaN MB". Unset means the default. Anything else must be a plain
+ * positive decimal number ("512", "12.5"): "512m" (the docker `--memory` spelling), "abc", "", "0", "-5", "1e3",
+ * "0x10" and "Infinity" are all refused, and there is no fallback to the default, because that would discard what
+ * the operator asked for. A new knob should use this and not `Number(process.env.X)`.
+ */
+const envProblems = [];
+function envNumber(name, fallback, { integer = false } = {}) {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const ok = /^\d+(\.\d+)?$/.test(raw) && Number.isFinite(Number(raw)) && Number(raw) > 0 && (!integer || Number.isInteger(Number(raw)));
+  if (!ok) {
+    envProblems.push(`${name}=${JSON.stringify(raw)} is not a positive ${integer ? "whole " : ""}number (plain digits, no unit suffix such as "m")`);
+    return fallback;
+  }
+  return Number(raw);
+}
 
 const BUNDLE = process.env.BENCH_BUNDLE || "/app/bench/process.bundle.cjs";
 const FIXTURES = process.env.BENCH_FIXTURES || "/app/fixtures";
@@ -54,7 +82,7 @@ const FIXTURES = process.env.BENCH_FIXTURES || "/app/fixtures";
  * (a sharp upgrade, a Node upgrade) and would have to be re-tuned for reasons that have nothing to do with this
  * module.
  */
-const REPLICA_BUDGET_MB = Number(process.env.REPLICA_BUDGET_MB || 400);
+const REPLICA_BUDGET_MB = envNumber("REPLICA_BUDGET_MB", 400);
 /**
  * The built Next.js server, booted and serving, with **no image work and sharp not yet loaded**, under these same
  * two limits: `node .next/standalone/server.js` in the same cgroup, hit `/api/health`, then read VmHWM.
@@ -68,25 +96,37 @@ const REPLICA_BUDGET_MB = Number(process.env.REPLICA_BUDGET_MB || 400);
  *
  * Last re-measured (14.4's route on `main`): VmHWM 104 MB after `/api/health` on glibc, 95 MB with a musl-like
  * glibc setting, so 112 is deliberately a little high. Note what it does not contain: a signed-in server. The
- * first sign-in (scrypt) left VmRSS at about 175 MB on glibc and 102 MB musl-like, so a replica that has served
- * a login is above "at rest" before any photo arrives. The peaks do not coincide, so this is not added, but it is
- * why the measurement against the running server (the PR that introduced this note) is worth repeating.
+ * first sign-in (scrypt) is a transient whose size is a configuration parameter, and it is not small: a server
+ * that had served a full sign-up, sign-in and upload flow reached VmHWM 276 MB on default glibc (the allocator
+ * that does not ship, with no cgroup back-pressure, and including image work), and about 102 MB RSS musl-like
+ * after a login alone. This constant is **not** safe because a signed-in server happens to sit close to it; it
+ * is not claimed to hold for one. Nothing bounds concurrent sign-ins the way `MAX_CONCURRENT` 1 bounds image
+ * work, so those peaks can coincide with an upload on a real replica. What makes the constant safe is the
+ * headroom in the projection: on the musl-like runs the projected replica sat about 120-150 MB under the budget,
+ * which absorbs a 60-90 MB understatement here. If the headroom shrinks, this is the constant to re-examine
+ * first, and a signed-in term should still not be added to the projection: it would bake a transient into a
+ * steady-state figure.
  *
  * Re-measure this constant if the app grows. If it moves, the delta budget moves with it, and the change belongs
  * in the PR description. It is not something to adjust until the gate passes.
  */
-const SERVER_BASELINE_MB = Number(process.env.SERVER_BASELINE_MB || 112);
+const SERVER_BASELINE_MB = envNumber("SERVER_BASELINE_MB", 112);
 /**
  * An override of the delta budget cannot bypass the gate: the projected replica is checked against
  * REPLICA_BUDGET_MB on its own, below, whatever the delta budget says. The override is kept for experiments.
  */
-const DELTA_BUDGET_OVERRIDE = process.env.DELTA_BUDGET_MB ? Number(process.env.DELTA_BUDGET_MB) : null;
+const DELTA_BUDGET_OVERRIDE = envNumber("DELTA_BUDGET_MB", null);
 /** Stop once two successive rounds move the peak less than this, so a flat allocator costs CI almost nothing. */
-const PLATEAU_PCT = Number(process.env.BENCH_PLATEAU_PCT || 2);
-const MAX_ROUNDS = Number(process.env.BENCH_MAX_ROUNDS || 8);
-const MIN_ROUNDS = Number(process.env.BENCH_MIN_ROUNDS || 2);
+const PLATEAU_PCT = envNumber("BENCH_PLATEAU_PCT", 2);
+const MAX_ROUNDS = envNumber("BENCH_MAX_ROUNDS", 8, { integer: true });
+const MIN_ROUNDS = envNumber("BENCH_MIN_ROUNDS", 2, { integer: true });
 /** A hard wall-clock stop, so a pathologically slow runner cannot hang the job. */
-const MAX_SECONDS = Number(process.env.BENCH_MAX_SECONDS || 420);
+const MAX_SECONDS = envNumber("BENCH_MAX_SECONDS", 420);
+
+if (envProblems.length > 0) {
+  console.error("bench refused to run: invalid environment.\n  " + envProblems.join("\n  "));
+  process.exit(1);
+}
 
 const MB = 1024 * 1024;
 const mb = (bytes) => bytes / MB;
@@ -145,6 +185,21 @@ async function main() {
   const sharp = require("sharp");
   const { processImage, MAX_CONCURRENT, MAX_WAITING, MAX_INPUT_BYTES } = require(BUNDLE);
   const sharpStepMb = mb(peakRss() - beforeSharp);
+  // `VmHWM` is a monotone high-water mark, so the step cannot be negative, but it can only be *understated*: if
+  // node's own startup peaked above the post-load RSS it reads 0, and a 0 would silently widen the budget by the
+  // whole ~23-29 MB step, in the unsafe direction. Real readings are 23-29 MB, so a reading under this is a
+  // broken measurement. The harness refuses rather than substituting a made-up figure (which would be an invented
+  // number) or carrying on with a lenient one. It is also measured going into a near-empty process, not into a
+  // 112 MB server; the direction of that error is unknown, so it is stated here and not corrected for.
+  const SHARP_STEP_FLOOR_MB = 5;
+  if (!(sharpStepMb >= SHARP_STEP_FLOOR_MB)) {
+    console.error(
+      `bench refused to run: SHARP LOAD STEP read ${sharpStepMb.toFixed(1)} MB, under the ${SHARP_STEP_FLOOR_MB} MB floor. ` +
+        `Loading sharp really costs about 23-29 MB, so this reading is wrong (VmHWM was already that high before ` +
+        `require("sharp")) and it would understate the projected replica.`,
+    );
+    process.exit(1);
+  }
   const DELTA_BUDGET_MB = DELTA_BUDGET_OVERRIDE ?? REPLICA_BUDGET_MB - SERVER_BASELINE_MB - sharpStepMb;
   const cgroup = cgroupPeakSource();
   const isMusl = !process.report.getReport().header.glibcVersionRuntime;
