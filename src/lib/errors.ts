@@ -60,3 +60,12 @@ export class UnsupportedMediaTypeError extends HttpError {
     this.code = "unsupported";
   }
 }
+
+/** Refused up front because the server is at its limit for this kind of work; nothing was attempted, so retrying is right. */
+export class ServiceBusyError extends HttpError {
+  constructor(message = "The server is busy. Try again in a few seconds.", retryAfterSeconds = 5) {
+    super(503, message);
+    this.code = "busy";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}

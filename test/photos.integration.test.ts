@@ -445,6 +445,89 @@ describe.skipIf(!url)("photo upload and serving (Postgres)", () => {
   });
 
   // =================================================================================================================
+  describe("upload: in-flight admission (bounds the memory of bodies being read)", () => {
+    /** An upload whose body has not finished arriving: it holds its slot until `finish`, `empty` or `fail` is called. */
+    const stalled = (listingId: string) => {
+      let ctl!: ReadableStreamDefaultController<Uint8Array>;
+      const body = new ReadableStream<Uint8Array>({ start: (c) => void (ctl = c) });
+      const response = Upload.POST(
+        new Request(`${BASE}/api/listings/${listingId}/photos`, {
+          method: "POST",
+          headers: { origin: ORIGIN, "content-type": JPEG, "x-client-op": uuid() },
+          body,
+          duplex: "half",
+        } as RequestInit),
+        { params: Promise.resolve({ id: listingId }) },
+      );
+      return {
+        response,
+        finish: () => (ctl.enqueue(new Uint8Array(small)), ctl.close()),
+        empty: () => ctl.close(),
+        fail: () => ctl.error(new Error("connection reset")),
+      };
+    };
+    const settle = () => new Promise((r) => setTimeout(r, 50));
+
+    it("refuses the upload over the bound with 503 busy and Retry-After, immediately, before reading its body", async () => {
+      const l = await newListing();
+      const held = Array.from({ length: Ph.MAX_UPLOADS_IN_FLIGHT }, () => stalled(l.id));
+      await settle();
+      expect(Ph.uploadsInFlightNow()).toBe(Ph.MAX_UPLOADS_IN_FLIGHT);
+
+      // One more. Without the admission this would sit waiting for its body (and hold up to 4 MB); it must answer now.
+      const extra = stalled(l.id);
+      const res = await Promise.race([extra.response, new Promise<null>((r) => setTimeout(() => r(null), 1500))]);
+      expect(res, "the extra upload was queued instead of refused").not.toBeNull();
+      expect(res!.status).toBe(503);
+      expect(res!.headers.get("retry-after")).toBe("5");
+      expect((await res!.json()).code).toBe("busy");
+      expect(Ph.uploadsInFlightNow()).toBe(Ph.MAX_UPLOADS_IN_FLIGHT); // the refused one took nothing
+      expect(await uploadsUsed(agent)).toBe(0);
+
+      for (const h of held) h.empty();
+      for (const h of held) expect((await h.response).status).toBe(415);
+      expect(Ph.uploadsInFlightNow()).toBe(0);
+    });
+
+    it("frees a slot when an upload finishes, so the next one is admitted", async () => {
+      const l = await newListing();
+      const held = Array.from({ length: Ph.MAX_UPLOADS_IN_FLIGHT }, () => stalled(l.id));
+      await settle();
+      held[0].finish();
+      expect((await held[0].response).status).toBe(201);
+      expect(Ph.uploadsInFlightNow()).toBe(Ph.MAX_UPLOADS_IN_FLIGHT - 1);
+      expect((await upload(l.id, small)).status).toBe(201);
+      for (const h of held.slice(1)) h.empty();
+      await Promise.all(held.slice(1).map((h) => h.response));
+      expect(Ph.uploadsInFlightNow()).toBe(0);
+    });
+
+    it("a body that throws mid-read does not leak its slot", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      const l = await newListing();
+      for (let round = 0; round < Ph.MAX_UPLOADS_IN_FLIGHT + 2; round++) {
+        const h = stalled(l.id);
+        await settle();
+        h.fail();
+        expect((await h.response).status).toBe(500);
+      }
+      expect(Ph.uploadsInFlightNow()).toBe(0);
+      vi.restoreAllMocks();
+      expect((await upload(l.id, small)).status).toBe(201);
+    });
+
+    it("refusals before the body (wrong owner, bad type) don't take a slot", async () => {
+      const l = await newListing();
+      as(agent2);
+      for (let i = 0; i < Ph.MAX_UPLOADS_IN_FLIGHT + 2; i++) expect((await upload(l.id, small)).status).toBe(404);
+      as(agent);
+      for (let i = 0; i < Ph.MAX_UPLOADS_IN_FLIGHT + 2; i++) expect((await upload(l.id, small, { type: "image/gif" })).status).toBe(415);
+      expect(Ph.uploadsInFlightNow()).toBe(0);
+    });
+  });
+
+  // =================================================================================================================
   describe("upload: idempotency", () => {
     it("the same x-client-op is one photo: a retry returns the first, 200, and costs nothing", async () => {
       const l = await newListing();

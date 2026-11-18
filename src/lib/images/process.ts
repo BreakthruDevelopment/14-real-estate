@@ -77,8 +77,16 @@ export const DEADLINE_MS = 10_000;
  *
  * With `MAX_WAITING` 1 a request can only ever be behind one other image, so this must be no larger than the worst
  * time one image can take, or a request that has waited longer than any image could run is not waiting but stuck
- * (behind work that outlived its own deadline). 8 s is the start value from the 14.4 decision on issue 15; it is
- * re-checked against `scripts/bench-images.cjs` after the ladder was shortened (see the 14.4 PR for the numbers).
+ * (behind work that outlived its own deadline). 8 s is the start value from the 14.4 decision on issue 15.
+ *
+ * **Do not "fix" this to a smaller number without a measurement.** It is deliberately a little looser than the
+ * ~6.9 s worst case estimated for the Alpine replica, and that is a reviewed decision, not an oversight: the
+ * re-check against `scripts/bench-images.cjs` needs the Alpine image, 6.9 s has never been measured, and pinning a
+ * constant to an unmeasured estimate is worse than keeping the instructed value. It fails safe: a stuck waiter is
+ * told to retry at 8 s instead of ~7 s; it can't be mistaken for a processing timeout because it is below the 10 s
+ * processing deadline and has its own reason and status (503, not 504); `MAX_WAITING` is still 1; and the route's
+ * `maxDuration` of 30 s covers 8 s of waiting plus 10 s of processing. A follow-up ties it to the bench once the
+ * memory gate's number (issue 16) is trustworthy.
  */
 export const QUEUE_WAIT_MS = 8_000;
 

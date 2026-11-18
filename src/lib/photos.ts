@@ -5,7 +5,7 @@ import { assertCan, isPublic, ownsListing, publicListing, uuidOr404 } from "@/li
 import type { Actor } from "@/lib/auth/rbac";
 import { db, schema } from "@/lib/db";
 import { env } from "@/lib/env";
-import { ConflictError, HttpError, NotFoundError, PayloadTooLargeError, UnsupportedMediaTypeError } from "@/lib/errors";
+import { ConflictError, HttpError, NotFoundError, PayloadTooLargeError, ServiceBusyError, UnsupportedMediaTypeError } from "@/lib/errors";
 import { LIMITS } from "@/lib/listing-schema";
 import { lockAgent, type PhotoMeta } from "@/lib/listings";
 import { log } from "@/lib/log";
@@ -41,6 +41,44 @@ const TOO_MANY_UPLOADS = "Too many photo uploads this hour. Try again later.";
 const L = schema.listing;
 const P = schema.listingPhoto;
 const B = schema.photoBlob;
+
+/**
+ * How many uploads may be in flight at once on this replica, from the moment the body starts to be read until the
+ * response is decided. Every one of them can hold a 4 MB body (about 5 MB measured, with the copy `Buffer.concat`
+ * makes), and none of the other limits can see that memory: the hourly allowance is spent after the read, and the
+ * image gate (one running, one waiting) sits behind a database transaction. Without this, one signed-in agent opening
+ * many slow connections walks around the memory budget the image gate exists to defend.
+ *
+ * 4 = the gate's one running and one waiting, plus two still reading their bodies or waiting on the database. That
+ * implies roughly 4 x 5 MB = 20 MB of request buffers on top of the image work, against the replica's 512 MB. Measured
+ * (see the 14.4 PR): 40 concurrent 4 MB uploads took the server from 216 MB to 406 MB before this existed.
+ *
+ * App-wide, in memory, so it is per replica (the replica count is 1). Over the bound is `503` `busy` with
+ * `Retry-After`: nothing was read or attempted, and retrying is the right advice.
+ */
+export const MAX_UPLOADS_IN_FLIGHT = 4;
+let uploadsInFlight = 0;
+
+/**
+ * Take an in-flight upload slot **before reading the body**, and call the returned release in a `finally` that
+ * covers the read and `uploadPhoto()`, so a throw mid-read can't leak the slot. Releasing twice is harmless.
+ */
+export function admitUpload(): () => void {
+  if (uploadsInFlight >= MAX_UPLOADS_IN_FLIGHT) {
+    log.warn("photo.upload_refused", { why: "in_flight", inFlight: uploadsInFlight });
+    throw new ServiceBusyError("Other photos are being uploaded right now. Try again in a few seconds.");
+  }
+  uploadsInFlight += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    uploadsInFlight -= 1;
+  };
+}
+
+/** For tests: how many uploads hold a slot right now. */
+export const uploadsInFlightNow = () => uploadsInFlight;
 
 /** The `Content-Type` header, minus parameters, as one of the accepted types; anything else is a 415. */
 export function declaredPhotoType(header: string | null | undefined): PhotoUploadType {
