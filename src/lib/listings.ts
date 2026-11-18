@@ -249,6 +249,7 @@ async function lockOwnListing(tx: Tx, actor: Actor, rawId: string, version: numb
       lat: L.lat,
       lng: L.lng,
       geoSource: L.geoSource,
+      title: L.title,
       description: L.description,
       publishedAt: L.publishedAt,
     })
@@ -314,8 +315,8 @@ export async function updateListing(actor: Actor | null, rawId: string, input: u
     }
 
     if (nextStatus === "active" || nextStatus === "pending") {
-      // The stored description goes public here, whichever path wrote it.
-      assertNoFairHousing({ description: facts.description ?? row.description });
+      // The stored title and description go public here, whichever path wrote them.
+      assertNoFairHousing({ title: facts.title ?? row.title, description: facts.description ?? row.description });
       await assertPublishable(tx, { id: row.id, description: facts.description ?? row.description, lat, lng });
     }
     if (nextStatus === "active" && row.publishedAt === null) patch.publishedAt = new Date();

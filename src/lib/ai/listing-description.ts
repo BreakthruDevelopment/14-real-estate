@@ -55,19 +55,35 @@ const URL_LIKE = /\bhttps?:\/\/\S+|\bwww\.\S+/gi;
 const PHONE = /(?<![\w])(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?![\w])/g;
 const STREET_WORDS =
   "st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|ln|lane|ct|court|way|pl|place|ter|terrace|cir|circle|pkwy|parkway|hwy|highway|trl|trail|loop";
-const STREET = new RegExp(`\\b\\d{1,6}\\s+(?:[A-Za-z0-9.'-]+\\s+){0,4}(?:${STREET_WORDS})\\b\\.?`, "gi");
+const STREET = new RegExp(`\\b\\d{1,6}\\s+(?:[\\p{L}\\p{N}.'-]+\\s+){0,4}(?:${STREET_WORDS})\\b\\.?`, "giu");
 const UNIT = /\b(?:apt|apartment|unit|suite|ste)\.?\s*#?\s*[A-Za-z0-9-]+|#\s?\d+[A-Za-z]?\b/gi;
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
+ * Make equivalent punctuation identical before matching: NFKC (full-width, non-breaking space), zero-width and soft-hyphen
+ * removal, typographic apostrophes (U+2019 from autocorrect and word processors) to ASCII, and every dash to "-". Both
+ * the notes and the stored address go through it, so "12 O\u2019Connor Street" and "12 O'Connor Street" are the same text.
+ */
+export function foldPunctuation(s: string): string {
+  return s
+    .normalize("NFKC")
+    .replace(/[\u00ad\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g, "")
+    .replace(/[\u2018\u2019\u201b\u02bc\u00b4`\u2032]/g, "'")
+    .replace(/[\u2010-\u2015\u2212]/g, "-");
+}
+
+/**
  * Agent notes are free text and may hold the street address, a phone number or an email. Strip those before the notes
- * leave the server. `addressLine` is the listing's own address, removed wherever it appears.
+ * leave the server. `addressLine` is the listing's own address, removed wherever it appears (apostrophe and dash style,
+ * case and spacing do not matter; an apostrophe may also be missing).
  */
 export function redactNotes(notes: string, addressLine?: string): string {
-  let out = notes.replace(/\0/g, "");
-  if (addressLine && addressLine.trim().length >= 3) {
-    out = out.replace(new RegExp(escapeRe(addressLine.trim()).replace(/\s+/g, "\\s+"), "gi"), "[removed]");
+  let out = foldPunctuation(notes.replace(/\0/g, ""));
+  const address = addressLine ? foldPunctuation(addressLine).trim() : "";
+  if (address.length >= 3) {
+    const pattern = escapeRe(address).replace(/'/g, "'?").replace(/\s+/g, "\\s+");
+    out = out.replace(new RegExp(pattern, "giu"), "[removed]");
   }
   return out
     .replace(EMAIL, "[removed]")

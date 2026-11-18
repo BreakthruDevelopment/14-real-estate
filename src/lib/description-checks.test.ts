@@ -3,6 +3,7 @@ import { DEMO_LIVING_ROOM_PHOTO_ID } from "@/lib/demo/ids";
 import { ALLOWED_PHRASES, CATEGORIES, FLAGGED_TERMS, SOURCES, SOURCE_VERIFICATION } from "@/lib/fair-housing-terms";
 import { demoFixtures } from "@/lib/ai/demo";
 import {
+  CONFUSABLES,
   type DescriptionFacts,
   type DraftOutput,
   assertNoFairHousing,
@@ -56,6 +57,9 @@ describe("fair-housing term data", () => {
     expect(SOURCE_VERIFICATION.flaggedPhrasesAreFromAHudList).toBe(false);
     expect(SOURCES.HUD_1995.doc).toMatch(/SECONDARY SOURCE/);
   });
+  it("never uses HUD's 1995 memo as a reason to FLAG anything (it says what should not ground complaints)", () => {
+    for (const t of FLAGGED_TERMS) expect(t.sources, t.phrase).not.toContain("HUD_1995");
+  });
   it("never cites the removed 24 CFR Part 109 as an authority", () => {
     for (const s of Object.values(SOURCES)) expect(`${s.doc} ${s.cite}`).not.toMatch(/109\.20|Part 109/);
   });
@@ -81,6 +85,27 @@ describe("fair-housing screen: flagged", () => {
   it("is not fooled by accents, zero-width characters, full-width letters or look-alike Cyrillic", () => {
     for (const evasive of ["nó kids", "no​ kids", "no k​ids", "ｎｏ ｋｉｄｓ", "no kіds", "no  kids"]) {
       expect(findFairHousingTerms(evasive).map((h) => h.phrase), JSON.stringify(evasive)).toContain("no kids");
+    }
+  });
+
+  it("applies EVERY configured look-alike mapping, to every flagged phrase containing that letter", () => {
+    expect(Object.keys(CONFUSABLES).length).toBeGreaterThan(50);
+    let swaps = 0;
+    for (const [fake, latin] of Object.entries(CONFUSABLES)) {
+      for (const t of FLAGGED_TERMS) {
+        const at = t.phrase.indexOf(latin);
+        if (at < 0) continue;
+        const swapped = t.phrase.slice(0, at) + fake + t.phrase.slice(at + 1);
+        swaps++;
+        expect(findFairHousingTerms(`Nice home. ${swapped}`).map((h) => h.phrase), `U+${fake.codePointAt(0)!.toString(16)} in ${t.phrase}`).toContain(t.phrase);
+      }
+    }
+    expect(swaps).toBeGreaterThan(500);
+  });
+
+  it("catches the look-alikes the review named, including the Cyrillic Supplement one", () => {
+    for (const evasive of ["no ki\u0501s", "no \u043aids", "\u043cen only", "whi\u0442es only", "no \u043dandicapped", "able \u0432odied only", "\u051domen only"]) {
+      expect(findFairHousingTerms(evasive).length, evasive).toBe(1);
     }
   });
 
@@ -113,6 +138,25 @@ describe("fair-housing screen: accepted (the false-positive class)", () => {
       "A mens room and a womens room in the commercial unit",
       "Whites and creams throughout; only the garage is unpainted",
     ]) expect(findFairHousingTerms(text), text).toEqual([]);
+  });
+
+  it("never joins words across a sentence end: 'HOA fees? No. Families will love the cul-de-sac.'", () => {
+    expect(findFairHousingTerms("HOA fees? No. Families will love the cul-de-sac.")).toEqual([]);
+    for (const end of [".", "?", "!", ";", "...", ".\n\n", "!\n\n", ";  "]) {
+      expect(findFairHousingTerms(`There is a pool, no${end} Kids will love it. Adults${end} only a few steps away`), JSON.stringify(end)).toEqual([]);
+      expect(findFairHousingTerms(`Quiet street. No${end} Families will love the cul-de-sac.`), JSON.stringify(end)).toEqual([]);
+    }
+  });
+
+  it("still flags a phrase inside one sentence, across commas, line wraps and punctuation that is not a sentence end", () => {
+    for (const text of ["Sorry, no kids.", "No kids!", "Rule: no\nkids allowed", "no,  kids", "NO-KIDS", "no.kids", "Quiet. Adults only; call me."]) {
+      expect(findFairHousingTerms(text).length, text).toBeGreaterThan(0);
+    }
+  });
+
+  it("does not refuse paint and trim copy that says 'white only'", () => {
+    expect(findFairHousingTerms("White only cabinets and trim; black only hardware")).toEqual([]);
+    expect(findFairHousingTerms("whites only").map((h) => h.phrase)).toEqual(["whites only"]);
   });
 
   it("masks an allowed phrase even when a flagged term sits inside it, but only that phrase (injected lists)", () => {

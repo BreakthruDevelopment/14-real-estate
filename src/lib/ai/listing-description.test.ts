@@ -71,6 +71,27 @@ describe("what reaches the model", () => {
     expect(redactNotes("the  4417   quillback ridge dr house", STREET)).not.toContain("quillback");
   });
 
+  it("removes an address whose apostrophe is typographic in the notes, in the stored address, or both", () => {
+    const stored = "12 O'Connor Street";
+    for (const [notes, address] of [
+      ["Visit 12 O\u2019Connor Street.", stored],
+      ["Visit 12 O'Connor Street.", "12 O\u2019Connor Street"],
+      ["Visit 12 O\u2019Connor Street.", "12 O\u2019Connor Street"],
+      ["Visit 12 O\u2018Connor Street.", stored],
+      ["Visit 12 OConnor Street.", stored],
+      ["Visit 12\u00a0O\u2019Connor\u00a0Street.", stored],
+    ] as const) {
+      const out = redactNotes(notes, address);
+      expect(out, `${notes} / ${address}`).not.toMatch(/Connor/);
+      expect(buildDescriptionPrompt({ facts, agentNotes: notes, tone: "warm", photoIds: [], addressLine: address })).not.toMatch(/Connor/);
+    }
+  });
+
+  it("removes a typographic-apostrophe street even when the stored address is unrelated (the street-pattern layer alone)", () => {
+    expect(redactNotes("Near 9 O\u2019Brien Way, Austin")).not.toMatch(/Brien/);
+    expect(redactNotes("Near 14 Pe\u00f1a Road")).not.toMatch(/Pe\u00f1a/);
+  });
+
   it("keeps ordinary notes, including numbers that are not phones", () => {
     expect(redactNotes("Roof replaced 2021, 3 bedrooms, new HVAC 2023, 0.25 acre")).toBe("Roof replaced 2021, 3 bedrooms, new HVAC 2023, 0.25 acre");
   });

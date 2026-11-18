@@ -20,10 +20,14 @@
  *
  * - `FHA_3604C` and `CFR_100_75` are the live LAW: the Fair Housing Act forbids an advertisement that "indicates any
  *   preference, limitation, or discrimination" because of race, color, religion, sex, handicap, familial status or
- *   national origin. Every flagged phrase below is a direct statement of such a preference or exclusion, a phrase
- *   whose plain meaning is "this dwelling is (not) for people of class X". That is the basis for the flag.
- *   THE EXACT PHRASES ARE THE BUILDER'S SELECTION of unambiguous exclusion statements within those categories. They are
- *   not quotations from any HUD document.
+ *   national origin. Each flagged phrase below is a statement whose usual meaning is "this dwelling is (not) for
+ *   people of class X". That is the basis for the flag.
+ *   THE EXACT PHRASES ARE THE BUILDER'S SELECTION within those categories. They are not quotations from any HUD
+ *   document, and they are not all unambiguous: "adults only" can describe a pool, "no men" a sentence about a
+ *   room. They are chosen to be the plural or people forms ("whites only", not "white only", which names a paint
+ *   colour in "white only on the trim"). A refusal can therefore be a false positive; it names the phrase so the agent
+ *   can rephrase. HUD_1995 is deliberately NOT a source for any flagged phrase: the memo, as reported, says what should
+ *   not ground complaints, and supports nothing about a phrase being flaggable. It sources only the allow-list.
  * - `HUD_1995` is the 9 January 1995 memorandum of Roberta Achtenberg (Assistant Secretary for Fair Housing and Equal
  *   Opportunity) on section 804(c) advertising. Per a published fair-housing publisher's guide (a SECONDARY source;
  *   HUD's own text was not read by either author), it says facially neutral terms including "master bedroom", "rare
@@ -90,23 +94,23 @@ export const SOURCE_VERIFICATION = {
 export type FlaggedTerm = { phrase: string; category: Category; sources: readonly SourceKey[] };
 
 const LAW = ["FHA_3604C", "CFR_100_75"] as const satisfies readonly SourceKey[];
-const LAW_AND_HUD = ["FHA_3604C", "CFR_100_75", "HUD_1995"] as const satisfies readonly SourceKey[];
 
 function terms(category: Category, sources: readonly SourceKey[], phrases: string[]): FlaggedTerm[] {
   return phrases.map((phrase) => ({ phrase, category, sources }));
 }
 
 /**
- * Flagged phrases. Matched on whole words after normalisation (case, punctuation, accents), so "No Kids!" and "no-kids"
- * match, and "no children's play area" does not (the apostrophe is removed, giving the word "childrens").
+ * Flagged phrases. Matched on whole words after normalisation (case, punctuation, accents, look-alike letters), so "No Kids!" and
+ * "no-kids" match, "no children's play area" does not (the apostrophe is removed, giving the word "childrens"), and a
+ * phrase never spans a sentence end ("HOA fees? No. Families will love it").
  */
 export const FLAGGED_TERMS: readonly FlaggedTerm[] = [
-  ...terms("race", LAW, ["whites only", "white only", "blacks only", "no blacks", "no minorities"]),
+  ...terms("race", LAW, ["whites only", "blacks only", "no blacks", "no minorities"]),
   ...terms("color", LAW, ["no colored people", "coloreds only"]),
   ...terms("national_origin", LAW, ["no foreigners", "no immigrants", "americans only", "no hispanics", "no mexicans", "no asians", "no arabs"]),
   ...terms("religion", LAW, ["christians only", "christian only", "catholics only", "jews only", "jewish only", "muslims only", "no jews", "no muslims", "no catholics"]),
   ...terms("sex", LAW, ["men only", "male only", "males only", "women only", "female only", "females only", "no men", "no women", "no females"]),
-  ...terms("familial_status", LAW_AND_HUD, [
+  ...terms("familial_status", LAW, [
     "no children",
     "no kids",
     "no infants",

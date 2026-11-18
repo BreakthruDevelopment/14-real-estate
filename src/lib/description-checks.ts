@@ -3,10 +3,21 @@
  * `assertNoFairHousing`) and the checks on an AI draft (numbers, features, photo ids). Pure: no database, no
  * `server-only`, so the editor and the tests can use it.
  *
- * Known limits of the fair-housing screen (it is a screening aid, not legal advice): it matches whole words after
- * folding case, punctuation, accents, zero-width characters and a few Cyrillic/Greek look-alikes. It does not catch
- * run-together words ("nokids"), spaced-out letters, leetspeak or a preference expressed in a sentence the list has no
- * phrase for. It can't tell "adults only" the pool rule from "adults only" the tenant rule.
+ * Threat model of the fair-housing screen, stated plainly: the person typing is a listing agent who may reach for
+ * exclusionary wording without meaning to (or paste text with odd characters from a word processor or another site),
+ * and a model that may echo wording from the notes. It is NOT built to stop someone deliberately smuggling a phrase
+ * past a filter; no word list can, and this one does not claim to.
+ *
+ * What it does: whole-word matching after folding case, accents, zero-width characters, full-width and
+ * mathematical letters (NFKC) and the look-alike letters in `CONFUSABLES` (Cyrillic, Greek, Armenian and small-capital
+ * Latin letters for each Latin letter). A phrase never spans a sentence boundary (`. ? ! ;` followed by a space or the
+ * end, or a blank line), so "HOA fees? No. Families will love it" is not "no families".
+ *
+ * What it does not: `CONFUSABLES` is a hand-picked list of the common look-alikes, not the full Unicode confusables
+ * set, so an unlisted look-alike gets through; nor run-together words ("nokids"), spaced-out letters, digit-for-letter
+ * leetspeak ("n0 kids"), or a preference expressed in a sentence the list has no phrase for. It can't tell "adults
+ * only" the pool rule from "adults only" the tenant rule, so it can refuse legitimate copy; the refusal names the
+ * phrase so the agent can rephrase.
  */
 import { BadRequestError } from "@/lib/errors";
 import { FEATURE_LABELS, type Feature } from "@/lib/listing-schema";
@@ -22,22 +33,45 @@ import {
 // Text normalisation and fair-housing matching
 // --------------------------------------------------------------------------------------------------------------
 
-const CONFUSABLES: Record<string, string> = {
-  "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x",
-  "і": "i", "ј": "j", "ѕ": "s", "ԁ": "d", "ο": "o", "α": "a", "ι": "i",
-};
+/**
+ * Look-alike letters folded to the Latin letter they imitate, applied to lowercase text after NFKC. Every key is applied
+ * (a test walks them all). Hand-picked, not the full Unicode confusables set. Written as code points on purpose.
+ */
+export const CONFUSABLES: Record<string, string> = Object.fromEntries(
+  Object.entries({
+    // Cyrillic
+    "0430": "a", "0432": "b", "0441": "c", "0501": "d", "0435": "e", "04bb": "h", "043d": "h", "0456": "i", "0458": "j",
+    "043a": "k", "04cf": "l", "043c": "m", "043e": "o", "0440": "p", "051b": "q", "0455": "s", "0442": "t", "0443": "y",
+    "0445": "x", "051d": "w", "0475": "v",
+    // Greek
+    "03b1": "a", "03b2": "b", "03b3": "y", "03b5": "e", "03b7": "n", "03b9": "i", "03ba": "k", "03bd": "v", "03bf": "o",
+    "03c1": "p", "03c4": "t", "03c5": "u", "03c7": "x", "03c9": "w",
+    // Armenian
+    "0585": "o", "057d": "u",
+    // Latin: dotless i, script a and g, and the small capitals
+    "0131": "i", "0251": "a", "0261": "g", "1d00": "a", "0299": "b", "1d04": "c", "1d05": "d", "1d07": "e", "0262": "g",
+    "029c": "h", "026a": "i", "1d0a": "j", "1d0b": "k", "029f": "l", "1d0d": "m", "0274": "n", "1d0f": "o", "1d18": "p",
+    "0280": "r", "a731": "s", "1d1b": "t", "1d1c": "u", "1d20": "v", "1d21": "w", "028f": "y", "1d22": "z",
+  }).map(([cp, latin]) => [String.fromCodePoint(parseInt(cp, 16)), latin]),
+);
 
-/** Lowercase words only: no accents, no apostrophes, every other non-letter/digit is a word break. */
-export function toWords(input: string): string[] {
-  const folded = input
+const SENTENCE_BARRIER = "\u0001";
+
+/**
+ * Lowercase words only: no accents, no apostrophes, look-alike letters folded, every other non-letter/digit is a word
+ * break. With `barriers`, a sentence end (`. ? ! ;` followed by whitespace or the end, or a blank line) leaves a barrier
+ * word that no phrase contains, so a phrase can't span two sentences.
+ */
+export function toWords(input: string, opts: { barriers?: boolean } = {}): string[] {
+  let folded = input
     .normalize("NFKC")
-    .replace(/[­​-‏‪-‮⁠﻿]/g, "")
+    .replace(/[\u00ad\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g, "")
     .normalize("NFD")
     .replace(/\p{M}+/gu, "")
-    .toLowerCase()
-    .replace(/[Ѐ-ӿͰ-Ͽ]/g, (c) => CONFUSABLES[c] ?? c)
-    .replace(/['’‘`´]/g, "");
-  return folded.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    .toLowerCase();
+  folded = Array.from(folded, (c) => CONFUSABLES[c] ?? c).join("").replace(/['\u2019\u2018`\u00b4]/g, "");
+  if (opts.barriers) folded = folded.replace(/[.?!;]+(?=\s|$)|\n[ \t]*\n\s*/g, ` ${SENTENCE_BARRIER} `);
+  return folded.split(/[^\p{L}\p{N}\u0001]+/u).filter(Boolean);
 }
 
 export type FairHousingHit = { phrase: string; category: Category };
@@ -66,7 +100,7 @@ function maskPhrase(words: string[], phrase: string[]): string[] {
  * "family room" and "walk-in closet" are never flagged, and neither is "kids" inside "no kidsville" (a different word).
  */
 export function findFairHousingTerms(text: string, lists: Lists = DEFAULT_LISTS): FairHousingHit[] {
-  let words = toWords(text);
+  let words = toWords(text, { barriers: true });
   for (const a of lists.allowed) words = maskPhrase(words, toWords(a.phrase));
   const hits: FairHousingHit[] = [];
   for (const t of lists.flagged) {

@@ -140,6 +140,21 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
     });
   });
 
+  describe("a stored title is screened on publish too", () => {
+    it("refuses to publish a listing whose stored title is flagged, naming the title, and lets a fixed one through", async () => {
+      const l = await create();
+      await addPhoto(sql, l.id);
+      await sql`update listing set title = 'Quiet bungalow, adults only' where id = ${l.id}`;
+      const e = await rejection(L.updateListing(agent, l.id, { version: l.version, status: "active" }));
+      expect(e.status).toBe(400);
+      expect(e.body.error).toContain("title");
+      expect(e.body.error).toContain('"adults only"');
+      expect((await L.getMyListing(agent, l.id)).status).toBe("draft");
+      const ok = await L.updateListing(agent, l.id, { version: l.version, title: "Quiet bungalow", status: "active" });
+      expect(ok.status).toBe("active");
+    });
+  });
+
   describe("the demo fixture against the seeded bungalow", () => {
     it("passes every check, photo included, for a photo inserted with DEMO_LIVING_ROOM_PHOTO_ID", async () => {
       await seedDemoBungalow();
