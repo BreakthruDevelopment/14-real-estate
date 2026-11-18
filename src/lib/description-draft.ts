@@ -40,6 +40,10 @@ export type DescriptionDraftResult = {
 export const PENDING_STALE_MS = 60_000;
 const WAIT_STEP_MS = 200;
 const WAIT_MAX_MS = 22_000;
+/** The route's `maxDuration` (seconds there, ms here). A generation that can't finish inside it must not be started. */
+export const ROUTE_BUDGET_MS = 25_000;
+/** Time kept after the model call for the checks and the database writes. */
+const FINISH_MARGIN_MS = 2_000;
 
 const D = schema.descriptionDraft;
 
@@ -81,7 +85,16 @@ async function loadImages(listingId: string, photoIds: string[]): Promise<{ ids:
  * listing's 5-a-day cap nor the 10-an-hour and app-wide caps can be overshot by concurrent requests; a failed model call
  * gives the slot and the allowance back.
  */
-export async function createDescriptionDraft(actor: Actor | null, rawId: string, input: unknown, clientOpId: string): Promise<DescriptionDraftResult> {
+export async function createDescriptionDraft(
+  actor: Actor | null,
+  rawId: string,
+  input: unknown,
+  clientOpId: string,
+  /** Test hook: the route budget and the poll step. Production passes nothing. */
+  opts: { routeBudgetMs?: number; waitStepMs?: number } = {},
+): Promise<DescriptionDraftResult> {
+  const startedAt = Date.now();
+  const routeBudgetMs = opts.routeBudgetMs ?? ROUTE_BUDGET_MS;
   assertCan(actor, "listing:manage");
   const req = draftRequestInput.parse(input ?? {});
   const opId = z.string().uuid().parse(clientOpId);
@@ -95,7 +108,7 @@ export async function createDescriptionDraft(actor: Actor | null, rawId: string,
   }
 
   const cap = env().AI_DAILY_CAP;
-  const claim = (): Promise<Claim> =>
+  const claim = (waited: boolean): Promise<Claim> =>
     db().transaction(async (tx) => {
       await lockAgent(tx, actor);
       const [existing] = await tx.select().from(D).where(and(eq(D.listingId, listing.id), eq(D.clientOpId, opId)));
@@ -103,6 +116,13 @@ export async function createDescriptionDraft(actor: Actor | null, rawId: string,
         if (existing.status === "done") return { kind: "replay", result: replayOf(existing) };
         if (Date.now() - existing.createdAt.getTime() <= PENDING_STALE_MS) return { kind: "wait" };
         await tx.delete(D).where(eq(D.id, existing.id)); // abandoned: take it over (its allowance stays spent)
+      }
+      // A request that already waited for someone else's slot and now finds it free (the original failed, timed out or
+      // died) starts a generation only if one can still finish inside the route's time limit; otherwise the platform
+      // would kill it mid-generation with its slot and allowance spent. Checked before anything is reserved, so the
+      // refusal costs nothing, and only for a request that waited: a first attempt has the whole budget.
+      if (waited && routeBudgetMs - (Date.now() - startedAt) < env().AI_TIMEOUT_MS + FINISH_MARGIN_MS) {
+        throw new ConflictError("The earlier request for this draft didn't finish. Retry with the same request id.");
       }
       const [{ n }] = await tx
         .select({ n: count() })
@@ -120,11 +140,11 @@ export async function createDescriptionDraft(actor: Actor | null, rawId: string,
 
   // A duplicate that arrives while the first is still running waits for its answer instead of making a second call.
   const waitUntil = Date.now() + WAIT_MAX_MS;
-  let claimed = await claim();
+  let claimed = await claim(false);
   while (claimed.kind === "wait") {
     if (Date.now() > waitUntil) throw new ConflictError("This draft is still being written. Retry in a moment with the same request id.");
-    await new Promise((r) => setTimeout(r, WAIT_STEP_MS));
-    claimed = await claim();
+    await new Promise((r) => setTimeout(r, opts.waitStepMs ?? WAIT_STEP_MS));
+    claimed = await claim(true);
   }
   if (claimed.kind === "replay") return claimed.result;
   const draftId = claimed.id;

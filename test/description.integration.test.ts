@@ -28,7 +28,8 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
   const webp = readFileSync("test/fixtures/images/photo.webp");
 
   /** A fresh request id per call, as a client would mint one per intent. */
-  const draft = (who: TestActor | null, id: string, input: unknown = {}, op: string = crypto.randomUUID()) => D.createDescriptionDraft(who, id, input, op);
+  const draft = (who: TestActor | null, id: string, input: unknown = {}, op: string = crypto.randomUUID(), opts?: { routeBudgetMs?: number; waitStepMs?: number }) =>
+    D.createDescriptionDraft(who, id, input, op, opts);
   const create = async (o: Record<string, unknown> = {}, who = agent) => (await L.createListing(who, facts(o))).listing;
   const status = async (p: Promise<unknown>) => {
     try {
@@ -244,12 +245,12 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
 
   describe("retries are idempotent and the per-listing cap can't be overshot (#23)", () => {
     /** A live-path model stub that takes `delayMs` to answer and counts how many times it was called. */
-    function slowModel(delayMs: number, fail = false) {
+    function slowModel(delayMs: number, fail: boolean | number = false) {
       const state = { calls: 0 };
       vi.stubGlobal("fetch", async () => {
         state.calls++;
         await new Promise((r) => setTimeout(r, delayMs));
-        if (fail) return new Response("boom", { status: 500 });
+        if (fail === true || (typeof fail === "number" && state.calls <= fail)) return new Response("boom", { status: 500 });
         return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(demoFixtures["listing-description"]) }] } }] }));
       });
       vi.stubEnv("AI_PROVIDER", "gemini");
@@ -344,6 +345,34 @@ describe.skipIf(!url)("description writer and fair-housing save check (Postgres)
       expect(model.calls).toBe(1);
       expect(await rows(l.id)).toBe(1);
       expect((await sql`select status from description_draft where listing_id = ${l.id}`)[0].status).toBe("done");
+    });
+
+    it("a duplicate that waited, whose original then abandoned its slot, does NOT start a generation it can't finish inside the route budget", async () => {
+      vi.stubEnv("AI_TIMEOUT_MS", "1000");
+      const model = slowModel(600, 1); // the original fails after 600 ms (no provider retry: the budget is too small) and gives its slot back
+      const l = await create();
+      const op = crypto.randomUUID();
+      const opts = { routeBudgetMs: 3_000, waitStepMs: 50 }; // a 1 s provider call + 2 s margin no longer fits after ~0.65 s of waiting
+      const [original, duplicate] = await Promise.all([status(draft(agent, l.id, {}, op, opts)), new Promise((r) => setTimeout(r, 100)).then(() => rejection(draft(agent, l.id, {}, op, opts)))]);
+      expect(original).toBeGreaterThanOrEqual(500);
+      expect(duplicate.status).toBe(409);
+      expect(duplicate.body.error).toMatch(/Retry with the same request id/);
+      expect(model.calls).toBe(1); // the duplicate made no model call
+      expect(await rows(l.id)).toBe(0);
+      expect(await used()).toEqual({ hourly: 0, daily: 0 }); // and spent nothing
+    });
+
+    it("but a duplicate that waited only briefly, with plenty of budget left, takes the freed slot and succeeds", async () => {
+      const model = slowModel(600, 2); // the original's call and the provider's one automatic retry both fail; then it gives its slot back
+      const l = await create();
+      const op = crypto.randomUUID();
+      const opts = { waitStepMs: 50 }; // the default 25 s budget
+      const [original, duplicate] = await Promise.all([status(draft(agent, l.id, {}, op, opts)), new Promise((r) => setTimeout(r, 100)).then(() => draft(agent, l.id, {}, op, opts))]);
+      expect(original).toBeGreaterThanOrEqual(500);
+      expect(duplicate.replayed).toBe(false);
+      expect(model.calls).toBe(3); // original + its retry, then the duplicate's one call
+      expect(await rows(l.id)).toBe(1);
+      expect(await used()).toEqual({ hourly: 1, daily: 1 });
     });
 
     it("requires a UUID op id, and the database enforces one draft per (listing, op id)", async () => {
