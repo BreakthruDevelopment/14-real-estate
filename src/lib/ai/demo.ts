@@ -1,3 +1,4 @@
+import { DEMO_LIVING_ROOM_PHOTO_ID } from "@/lib/demo/ids";
 import type { DemoToolScript } from "./types";
 
 /**
@@ -6,6 +7,20 @@ import type { DemoToolScript } from "./types";
  * Each app adds a fixture for each AI task it defines.
  */
 export const demoFixtures: Record<string, unknown> = {
+  // The seeded listing "Craftsman bungalow near Zilker" (3 bed, 2 bath, 1,640 sqft, 1938, fenced yard, home office).
+  // Built only from those facts (no street, no neighborhood). Against any other listing the server's number and feature checks flag what differs.
+  "listing-description": {
+    headline: "Recorded demo: 1938 Craftsman with a fenced yard",
+    description:
+      "Built in 1938, this Craftsman bungalow offers 3 bedrooms and 2 bathrooms across 1,640 square feet. Its 1938 construction gives the house a traditional Craftsman character.\n\nA dedicated home office gives you a place to work without giving up a bedroom. Outside, the fenced yard gives the property a private outdoor space.\n\nThe home is in Austin, Texas. Schedule a showing to see the home in person.",
+    highlights: [
+      { text: "3 bedrooms", factKey: "beds" },
+      { text: "Built in 1938", factKey: "year" },
+      { text: "Fenced yard", factKey: "feature" },
+    ],
+    photoSuggestions: [{ feature: "Built-in shelving", photoId: DEMO_LIVING_ROOM_PHOTO_ID }],
+    needsHumanBecause: null,
+  },
   "summarize-items": {
     summary:
       "You have a few open items. The most recent ones focus on setup work; nothing looks overdue.",

@@ -3,6 +3,7 @@ import { type SQL, and, asc, count, desc, eq, sql } from "drizzle-orm";
 import { assertCan, isPublic, ownsListing, uuidOr404 } from "@/lib/access";
 import { ForbiddenError, type Actor, toRole } from "@/lib/auth/rbac";
 import { db, schema } from "@/lib/db";
+import { assertNoFairHousing } from "@/lib/description-checks";
 import { ConflictError, NotFoundError, UnprocessableError } from "@/lib/errors";
 import { haversineMiles } from "@/lib/geo/distance";
 import {
@@ -187,6 +188,7 @@ const round5 = (n: number) => Math.round(n * 1e5) / 1e5;
 export async function createListing(actor: Actor | null, input: unknown): Promise<{ listing: OwnerListing; created: boolean }> {
   assertCan(actor, "listing:manage");
   const data = newListingInput.parse(input);
+  assertNoFairHousing({ title: data.title, description: data.description });
   const { id, created } = await db().transaction(async (tx) => {
     await lockAgent(tx, actor);
     // One create at a time, app-wide: makes the replay check below and both cap counts exact (the 5,000 cap spans
@@ -282,6 +284,8 @@ async function assertPublishable(tx: Tx, l: { id: string; description: string; l
 export async function updateListing(actor: Actor | null, rawId: string, input: unknown): Promise<OwnerListing> {
   assertCan(actor, "listing:manage");
   const { version, status, ...facts } = updateListingInput.parse(input);
+  // Fair-housing screen (spec D5): a flagged title or description is refused, not warned about. Runs before any write.
+  assertNoFairHousing({ title: facts.title, description: facts.description });
   const id = uuidOr404(rawId);
   await db().transaction(async (tx) => {
     await lockAgent(tx, actor);
@@ -310,6 +314,8 @@ export async function updateListing(actor: Actor | null, rawId: string, input: u
     }
 
     if (nextStatus === "active" || nextStatus === "pending") {
+      // The stored description goes public here, whichever path wrote it.
+      assertNoFairHousing({ description: facts.description ?? row.description });
       await assertPublishable(tx, { id: row.id, description: facts.description ?? row.description, lat, lng });
     }
     if (nextStatus === "active" && row.publishedAt === null) patch.publishedAt = new Date();
