@@ -1,4 +1,5 @@
 /** Shared fixtures for the integration tests (listings, access, roles). Not a test file. */
+import { readFileSync } from "node:fs";
 import type postgres from "postgres";
 
 export type TestActor = { id: string; role: "user" | "agent" | "admin" };
@@ -47,12 +48,15 @@ export function facts(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** A real (tiny) WebP, so the AI gateway's magic-byte check on photos sent to a model passes. */
+const WEBP_BYTES = readFileSync("test/fixtures/images/photo.webp");
+
 export async function addPhoto(sql: postgres.Sql, listingId: string, position = 0) {
   const [{ id }] = await sql`
     insert into listing_photo (listing_id, position, width, height, bytes_total, sha256)
     values (${listingId}, ${position}, 1280, 960, 3, ${"ab".repeat(32)}) returning id`;
   for (const variant of ["lg", "md", "sm"]) {
-    await sql`insert into photo_blob (photo_id, variant, bytes, sha256, width, height) values (${id}, ${variant}, ${Buffer.from([1, 2, 3])}, 'x', 1, 1)`;
+    await sql`insert into photo_blob (photo_id, variant, bytes, sha256, width, height) values (${id}, ${variant}, ${WEBP_BYTES}, 'x', 1, 1)`;
   }
   return id as string;
 }
