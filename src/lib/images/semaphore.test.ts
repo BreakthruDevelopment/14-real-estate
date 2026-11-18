@@ -142,4 +142,44 @@ describe("Semaphore", () => {
     expect(() => new Semaphore(0, 1)).toThrow();
     expect(() => new Semaphore(1, -1)).toThrow();
   });
+
+  describe("maxWaitMs", () => {
+    it("rejects a waiter that waited too long, takes it out of the queue, and leaves the runner alone", async () => {
+      const sem = new Semaphore(1, 1);
+      const first = deferred<string>();
+      const a = sem.run(() => first.promise);
+      const b = sem.run(async () => "b", { maxWaitMs: 5, onWaitTimeout: () => new Error("waited") });
+      await expect(b).rejects.toThrow("waited");
+      expect(sem.stats).toEqual({ active: 1, waiting: 0 });
+      // The slot in the queue is free again.
+      const c = sem.run(async () => "c");
+      first.resolve("a");
+      expect(await a).toBe("a");
+      expect(await c).toBe("c");
+      expect(sem.stats).toEqual({ active: 0, waiting: 0 });
+    });
+
+    it("does not count time spent running, and does not fire after the slot was handed over", async () => {
+      const sem = new Semaphore(1, 1);
+      const first = deferred();
+      const a = sem.run(() => first.promise);
+      const ran: string[] = [];
+      const b = sem.run(async () => { ran.push("b"); await new Promise((r) => setTimeout(r, 30)); return "b"; }, { maxWaitMs: 20 });
+      first.resolve();
+      await a;
+      // b started well inside its wait cap and then ran for longer than the cap: it must finish normally.
+      expect(await b).toBe("b");
+      expect(ran).toEqual(["b"]);
+    });
+
+    it("defaults to a 429 when no error is given", async () => {
+      const sem = new Semaphore(1, 1);
+      const first = deferred();
+      const a = sem.run(() => first.promise);
+      const b = sem.run(async () => "b", { maxWaitMs: 5 });
+      await expect(b).rejects.toMatchObject({ status: 429 });
+      first.resolve();
+      await a;
+    });
+  });
 });

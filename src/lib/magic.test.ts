@@ -9,6 +9,8 @@ const samples: Record<MagicType, Uint8Array> = {
   "image/jpeg": bytes(0xff, 0xd8, 0xff, 0xe0, 0x00),
   "image/png": bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0),
   "image/webp": Uint8Array.from([...ascii("RIFF"), 1, 0, 0, 0, ...ascii("WEBPVP8 ")]),
+  "image/heic": Uint8Array.from([0, 0, 0, 24, ...ascii("ftypheic"), 0, 0, 0, 0]),
+  "image/heif": Uint8Array.from([0, 0, 0, 24, ...ascii("ftypmif1"), 0, 0, 0, 0]),
 };
 
 describe("matchesMagic", () => {
@@ -19,7 +21,8 @@ describe("matchesMagic", () => {
   it("refuses every type claimed for another type's bytes", () => {
     for (const claimed of Object.keys(samples) as MagicType[]) {
       for (const actual of Object.keys(samples) as MagicType[]) {
-        if (claimed !== actual) expect(matchesMagic(claimed, samples[actual]), `${claimed} vs ${actual}`).toBe(false);
+        const sameFamily = claimed.startsWith("image/he") && actual.startsWith("image/he"); // HEIC and HEIF share one container
+        if (claimed !== actual && !sameFamily) expect(matchesMagic(claimed, samples[actual]), `${claimed} vs ${actual}`).toBe(false);
       }
     }
   });
@@ -30,6 +33,12 @@ describe("matchesMagic", () => {
     expect(matchesMagic("application/pdf", ascii("%PDF"))).toBe(false);
     expect(matchesMagic("application/pdf", ascii("<html>%PDF-"))).toBe(false);
     expect(matchesMagic("image/webp", Uint8Array.from([...ascii("RIFF"), 1, 0, 0, 0, ...ascii("WAVEfmt ")]))).toBe(false);
+  });
+
+  it("HEIC and HEIF need an ftyp box with a HEIF brand, not just any ISO media file", () => {
+    expect(matchesMagic("image/heic", Uint8Array.from([0, 0, 0, 24, ...ascii("ftypmp42"), 0, 0, 0, 0]))).toBe(false); // an MP4
+    expect(matchesMagic("image/heic", Uint8Array.from([0, 0, 0, 24, ...ascii("ftyp")]))).toBe(false); // truncated
+    expect(matchesMagic("image/heif", ascii("<svg xmlns='http://www.w3.org/2000/svg'/>"))).toBe(false);
   });
 
   it("refuses an unknown type", () => {

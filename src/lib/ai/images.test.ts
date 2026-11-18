@@ -5,8 +5,20 @@ import { type AiImage, AiError, MAX_IMAGE_BYTES, generate } from "./index";
 import { anthropicProvider, geminiProvider } from "./providers";
 
 const schema = z.object({ summary: z.string(), highlights: z.array(z.string()) });
-const b64 = (bytes: number) => Buffer.alloc(bytes, 1).toString("base64");
-const img = (bytes = 12, mimeType: AiImage["mimeType"] = "image/png"): AiImage => ({ mimeType, data: b64(bytes) });
+/** The first bytes of a real file of each type, so the magic-byte check passes; the rest is filler. */
+const MAGIC: Record<string, number[]> = {
+  "image/jpeg": [0xff, 0xd8, 0xff, 0xe0],
+  "image/png": [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+  "image/webp": [0x52, 0x49, 0x46, 0x46, 1, 0, 0, 0, 0x57, 0x45, 0x42, 0x50],
+  "image/heic": [0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63],
+  "image/heif": [0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x69, 0x66, 0x31],
+};
+const b64 = (bytes: number, type = "image/png") => {
+  const buf = Buffer.alloc(bytes, 1);
+  Buffer.from(MAGIC[type] ?? []).copy(buf, 0, 0, Math.min(bytes, (MAGIC[type] ?? []).length));
+  return buf.toString("base64");
+};
+const img = (bytes = 12, mimeType: AiImage["mimeType"] = "image/png"): AiImage => ({ mimeType, data: b64(bytes, mimeType) });
 
 function setEnv(extra: Record<string, string>) {
   vi.stubEnv("AI_PROVIDER", "");
@@ -124,6 +136,25 @@ describe("generate() image caps", () => {
     await rejected([{ mimeType: "image/png", data: "" }]);
   });
 
+  it("rejects bytes that are not the declared type, before anything is sent (issue 18)", async () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>').toString("base64");
+    const pad = (s: string) => s + "=".repeat((4 - (s.length % 4)) % 4);
+    await rejected([{ mimeType: "image/png", data: pad(svg) }]); // SVG claimed as PNG
+    await rejected([{ mimeType: "image/webp", data: pad(svg) }]);
+    await rejected([{ mimeType: "image/png", data: b64(40, "image/jpeg") }]); // a real JPEG claimed as PNG
+    await rejected([{ mimeType: "image/jpeg", data: b64(40, "image/webp") }]);
+    await rejected([{ mimeType: "image/heic", data: b64(40, "image/png") }]);
+    await rejected([{ mimeType: "image/png", data: Buffer.from("%PDF-1.7 not an image at all").toString("base64") }]);
+  });
+
+  it("accepts each allowed type when the bytes agree with it", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => geminiOk.clone());
+    vi.stubGlobal("fetch", fetchMock);
+    for (const t of ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"] as const) {
+      await expect(run([img(40, t)])).resolves.toMatchObject({ demo: false });
+    }
+  });
+
   it("accepts two 5 MB images and four small ones", async () => {
     const fetchMock = vi.fn().mockImplementation(async () => geminiOk.clone());
     vi.stubGlobal("fetch", fetchMock);
@@ -134,6 +165,7 @@ describe("generate() image caps", () => {
   it("rejects bad images even in demo mode", async () => {
     setEnv({ AI_PROVIDER: "demo" });
     await expect(run([{ mimeType: "image/png", data: "%%%" }])).rejects.toMatchObject({ kind: "input_rejected" });
+    await expect(run([{ mimeType: "image/png", data: b64(40, "image/jpeg") }])).rejects.toMatchObject({ kind: "input_rejected" });
   });
 });
 

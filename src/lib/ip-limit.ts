@@ -17,9 +17,23 @@ const MAX_TRACKED_IPS = 10_000;
 // Insertion order is window-start order: a restarted window is deleted and re-inserted, so the first key is the oldest.
 const hits = new Map<string, { windowStart: number; n: number }>();
 
-/** Returns true when this request is allowed. `now` is a parameter for tests. */
-export function allowPublicRequest(ip: string, now: number = Date.now(), limit: number = PUBLIC_LIMIT_PER_MINUTE): boolean {
-  const key = limiterKey(ip);
+/** Photo variants (`/img`): a listing page loads up to 36 of them, so they get their own, larger allowance. */
+export const IMG_LIMIT_PER_MINUTE = 600;
+
+/**
+ * Returns true when this request is allowed. `now` is a parameter for tests.
+ *
+ * `ns` is a namespace: counters are keyed `ns:ip`, so a route with its own allowance (`img`, `search_text`) does not
+ * spend the `public` one and the reverse. The table stays one map with one 10,000-entry bound across namespaces.
+ * The default keeps every existing call (`allowPublicRequest(ip)`) exactly as it was.
+ */
+export function allowPublicRequest(
+  ip: string,
+  now: number = Date.now(),
+  limit: number = PUBLIC_LIMIT_PER_MINUTE,
+  ns: string = "public",
+): boolean {
+  const key = `${ns}:${limiterKey(ip)}`;
   const entry = hits.get(key);
   if (entry && now - entry.windowStart < WINDOW_MS) {
     entry.n += 1;

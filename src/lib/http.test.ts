@@ -1,6 +1,6 @@
 import { DrizzleQueryError } from "drizzle-orm/errors";
 import { describe, expect, it, vi } from "vitest";
-import { ConflictError, NotFoundError, PayloadTooLargeError, TooManyRequestsError } from "@/lib/errors";
+import { ConflictError, HttpError, NotFoundError, PayloadTooLargeError, TooManyRequestsError } from "@/lib/errors";
 import { errorInfo, errorResponse, readJson } from "@/lib/http";
 
 const post = (body: BodyInit | null, headers: Record<string, string> = {}) =>
@@ -93,5 +93,23 @@ describe("errorResponse logging (issue #16)", () => {
     }
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+
+describe("errorResponse: code and Retry-After", () => {
+  it("adds a stable `code` to the body and Retry-After to the response when the error carries them", async () => {
+    const err = new HttpError(503, "busy");
+    err.code = "busy";
+    err.retryAfterSeconds = 5;
+    const res = errorResponse(err);
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("5");
+    expect(await res.json()).toEqual({ error: "busy", code: "busy" });
+  });
+
+  it("leaves both out for an ordinary error", async () => {
+    const res = errorResponse(new HttpError(404, "Not found"));
+    expect(res.headers.get("retry-after")).toBeNull();
+    expect(await res.json()).toEqual({ error: "Not found" });
   });
 });
