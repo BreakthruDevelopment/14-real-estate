@@ -10,10 +10,9 @@ const nextConfig: NextConfig = {
   // Loaded at runtime, never bundled: the Postgres driver, and sharp, whose native binding is chosen per
   // platform (`@img/sharp-linuxmusl-x64` in the Alpine runner). Bundling either one breaks that choice.
   serverExternalPackages: ["postgres", "sharp"],
-  // Nothing imports the image module until 14.4 adds the upload route, so file tracing would leave sharp
-  // out of `.next/standalone` and the runner image would ship without it. Naming it here puts it in the
-  // trace whatever the routes happen to import, which is what the CI step that loads sharp inside the
-  // built Alpine image checks.
+  // The upload route (14.4) loads the image module only through a dynamic import, which file tracing can miss,
+  // and the runner image would then ship without sharp. Naming it here puts it in the trace whatever the routes
+  // happen to import, which is what the CI step that loads sharp inside the built Alpine image checks.
   outputFileTracingIncludes: {
     "/*": ["./node_modules/sharp/**/*", "./node_modules/@img/sharp-linuxmusl-*/**/*", "./node_modules/@img/sharp-libvips-linuxmusl-*/**/*", "./node_modules/@img/sharp-linux-*/**/*", "./node_modules/@img/sharp-libvips-linux-*/**/*"],
   },

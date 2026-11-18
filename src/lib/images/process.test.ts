@@ -513,6 +513,47 @@ describe("one at a time", () => {
 
 // ---------------------------------------------------------------------------
 
+describe("deadline and queue wait are separate budgets", () => {
+  it("the ladder has one retry: 75, then 60", () => {
+    expect([VARIANTS.lg.quality, ...LG_QUALITY_LADDER]).toEqual([75, 60]);
+  });
+
+  it("a request that waits too long for the gate gets queue_timeout (503, busy, Retry-After), never a timeout", async () => {
+    const bytes = await readFixture("q100-2048.jpg");
+    const first = processImage({ bytes, declaredType: JPEG, queueWaitMs: 60_000 });
+    // Queued behind the first, with a wait cap far shorter than one image takes.
+    const queued = await processImage({ bytes, declaredType: JPEG, queueWaitMs: 5 }).catch((e: unknown) => e);
+    expect(queued).toBeInstanceOf(ImageError);
+    expect(queued).toMatchObject({ reason: "queue_timeout", status: 503, code: "busy", retryAfterSeconds: 5 });
+    // It left the queue, so the next caller can wait there again rather than being refused `busy`.
+    expect(imageQueueStats()).toEqual({ active: 1, waiting: 0 });
+    await first;
+  }, 120_000);
+
+  it("the deadline is measured from the slot, so waiting does not eat into it", async () => {
+    const small = await readFixture("small-320x240.jpg");
+    const big = await readFixture("q100-2048.jpg");
+    // The first holds the gate for a good while. The second needs only a few ms of work, but its 2.5 s deadline
+    // is far shorter than its wait: with the old whole-call deadline it would be a `timeout` before it ever ran.
+    const first = processImage({ bytes: big, declaredType: JPEG, queueWaitMs: 60_000 });
+    const t0 = Date.now();
+    const second = await processImage({ bytes: small, declaredType: JPEG, deadlineMs: 2_500, queueWaitMs: 60_000 });
+    const total = Date.now() - t0;
+    await first;
+    expect(second.variants.lg.bytes.byteLength).toBeGreaterThan(0);
+    expect(second.ms).toBeLessThan(2_500); // processing, from the slot
+    expect(total).toBeGreaterThan(second.ms); // it did wait, and the wait was not counted
+  }, 120_000);
+
+  it("a slow photo behind a fast one is judged on its own processing time", async () => {
+    const bytes = await readFixture("q100-2048.jpg");
+    const first = processImage({ bytes, declaredType: JPEG, queueWaitMs: 60_000 });
+    const second = await processImage({ bytes, declaredType: JPEG, deadlineMs: 1, queueWaitMs: 60_000 }).catch((e: unknown) => e);
+    expect(second).toMatchObject({ reason: "timeout", status: 504 }); // its own work overran
+    await first;
+  }, 120_000);
+});
+
 describe("deadline", () => {
   it("gives up on a photo that outlasts its deadline", async () => {
     const bytes = await readFixture("noisy-2048.png");
@@ -567,7 +608,7 @@ describe("input validation", () => {
 
 describe("the error contract routes depend on", () => {
   it("maps every reason to a status and a message with nothing internal in it", () => {
-    for (const reason of ["unsupported", "too_many_pixels", "decode_failed", "too_large_after_encode", "busy", "timeout"] as const) {
+    for (const reason of ["unsupported", "too_many_pixels", "decode_failed", "too_large_after_encode", "busy", "queue_timeout", "timeout"] as const) {
       const err = new ImageError(reason);
       expect(err.status).toBeGreaterThanOrEqual(400);
       expect(err.message).not.toMatch(/libvips|vips|sharp|Error:|\.ts:/i);
@@ -575,6 +616,10 @@ describe("the error contract routes depend on", () => {
     }
     expect(new ImageError("busy").retryAfterSeconds).toBe(3);
     expect(new ImageError("unsupported").retryAfterSeconds).toBeUndefined();
+    // Waiting too long is a 503 that tells the client to retry, with the same `busy` code as a full queue.
+    expect(new ImageError("queue_timeout")).toMatchObject({ status: 503, code: "busy", retryAfterSeconds: 5 });
+    expect(new ImageError("busy")).toMatchObject({ status: 429, code: "busy" });
+    expect(new ImageError("timeout")).toMatchObject({ status: 504, code: "timeout" });
   });
 
   it("agrees with the list of types the browser is told to accept", async () => {

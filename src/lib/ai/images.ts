@@ -1,3 +1,4 @@
+import { type MagicType, matchesMagic } from "@/lib/magic";
 import { AiError, type AiImage } from "./types";
 
 export const MAX_IMAGES = 4;
@@ -27,6 +28,13 @@ export function validateImages(images: AiImage[] | undefined): { count: number; 
     }
     if (typeof img.data !== "string" || img.data.length === 0 || img.data.length % 4 !== 0 || !BASE64.test(img.data)) {
       throw new AiError("Image data is not valid base64", "input_rejected");
+    }
+    // The declared type is the caller's word. Check the first bytes against it before anything is sent to a model
+    // (`matchesMagic` is a positive allowlist, so an SVG, an HTML page or anything unlisted fails closed). 16
+    // base64 characters are exactly 12 bytes, enough for every signature; a shorter string is checked whole.
+    const head = Buffer.from(img.data.slice(0, 16), "base64");
+    if (!matchesMagic(img.mimeType as MagicType, head)) {
+      throw new AiError("Image content does not match its type", "input_rejected");
     }
     const bytes = decodedBytes(img.data);
     if (bytes > MAX_IMAGE_BYTES) {
