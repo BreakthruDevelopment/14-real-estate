@@ -364,3 +364,22 @@ HNSW limit). Limits: 32 texts per call, 8,000 characters each, 64,000 in total (
   `demo: true` and the demo model name so vector spaces are never mixed.
 - `AI_TIMEOUT_MS` (default 20000, max 22000) bounds every provider call, `generate()` and `embed()` alike.
 - Logs carry task, provider, model, count and latency, never the text.
+
+## AI listing description writer
+
+An agent can ask for a draft description of their own listing (`POST /api/agent/listings/[id]/description`). The
+server sends the listing's facts (type, beds, baths, size, year, price, features, city, state, ZIP), the agent's notes
+with addresses, emails, phone numbers and URLs removed, and up to 3 of the listing's photos. It never sends the street
+address. The draft is only a draft: the agent edits and saves it, and the server checks it again on every save.
+
+- **Photos and Google's free tier.** Photos go to Gemini, as suggestions only ("seen in photos, confirm"). On the free
+  tier Google may use inputs to improve its products. **The demo uses stock or generated photos only**; do not upload
+  real client photos to a free-tier deployment.
+- **Server checks.** Numbers must match the facts or the agent's notes; feature highlights must name a selected
+  feature; photo suggestions must be photos that were sent; markup is stripped.
+- **Fair-housing screen: a screening aid, not legal advice.** Wording that states a preference or exclusion by a
+  protected class (for example "no kids", "adults only") is flagged on drafts, and **saving a title or description
+  that contains it is refused**, naming the phrase. It is not a copy of a HUD list: HUD withdrew its advertising word
+  list (24 CFR Part 109) in 1996, so the phrases are selected from the Fair Housing Act's seven protected classes
+  (`src/lib/fair-housing-terms.ts` records the sources and what was and was not verified). It misses wording it has no
+  phrase for, and ordinary terms such as "family room", "walk-in closet" and "master bedroom" are accepted.

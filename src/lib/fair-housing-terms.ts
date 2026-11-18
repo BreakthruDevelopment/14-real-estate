@@ -5,25 +5,40 @@
  * THIS IS A SCREENING AID, NOT LEGAL ADVICE. It catches explicit statements of preference or exclusion. It does not
  * catch everything (see "Known limits" in `description-checks.ts`) and it cannot judge context.
  *
+ * ## What this list is, and is not
+ *
+ * It is a screening aid derived from the statute's seven protected classes and HUD's guidance. It is NOT a
+ * reproduction of a HUD list, because HUD no longer publishes one. HUD's famous "words to avoid" list was in 24 CFR
+ * Part 109 (Advertising Guidelines, section 109.20), and Part 109 was REMOVED effective 1996-05-01 (61 FR 14378, 1 April
+ * 1996: "Part 109 is removed"; HUD said it would give the material through handbook guidance or other materials rather
+ * than keep it in the CFR). Published "fair housing words" sheets that cite 24 CFR 109.20 as live authority are wrong,
+ * and nothing here cites it. No implementation can claim to match a current HUD list: none exists.
+ *
  * ## Where the terms come from
  *
  * Every entry carries `sources`, keys into `SOURCES` below.
  *
- * - `FHA_3604C` and `CFR_100_75` are the LAW: the Fair Housing Act forbids an advertisement that "indicates any
+ * - `FHA_3604C` and `CFR_100_75` are the live LAW: the Fair Housing Act forbids an advertisement that "indicates any
  *   preference, limitation, or discrimination" because of race, color, religion, sex, handicap, familial status or
  *   national origin. Every flagged phrase below is a direct statement of such a preference or exclusion, a phrase
  *   whose plain meaning is "this dwelling is (not) for people of class X". That is the basis for the flag.
- * - `HUD_1995` is HUD's advertising guidance, the document the spec starts from. HUD's memo organises its examples by
- *   the same seven categories.
+ *   THE EXACT PHRASES ARE THE BUILDER'S SELECTION of unambiguous exclusion statements within those categories. They are
+ *   not quotations from any HUD document.
+ * - `HUD_1995` is the 9 January 1995 memorandum of Roberta Achtenberg (Assistant Secretary for Fair Housing and Equal
+ *   Opportunity) on section 804(c) advertising. Per a published fair-housing publisher's guide (a SECONDARY source;
+ *   HUD's own text was not read by either author), it says facially neutral terms including "master bedroom", "rare
+ *   find" and "desirable neighborhood" should not be the basis of complaints, and that "mother-in-law suite" and
+ *   "bachelor apartment" do not violate the Act. That is why bare "master" is not flagged: flagging it would be a
+ *   false positive against named HUD guidance.
  *
- * ## What was NOT verified (read this before trusting the list)
+ * ## Confidence, by claim (see `SOURCE_VERIFICATION`)
  *
- * The primary documents (hud.gov, eCFR, govinfo) were NOT reachable from the build sandbox (egress policy answered
- * 403), so no phrase here was checked word-for-word against the HUD memo or the CFR text. The CATEGORY and the legal
- * basis of each entry are the statute's own; the exact PHRASES are the builder's selection of unambiguous
- * exclusion/preference statements within those categories, and the allow-list phrases are those the spec attributes to
- * HUD's guidance. `SOURCE_VERIFICATION` records this so a test and the PR can both say so. A human should compare the
- * list with the HUD memo, and extend it, before the app is shown as a compliance aid.
+ * - Removal of 24 CFR Part 109 (61 FR 14378): read by the coordinator in the Federal Register document itself. I (the
+ *   builder) could not reach it from the sandbox, so for me this is reported, not read.
+ * - HUD's 1995 memo: quoted from a secondary source only. NOT checked against HUD's text.
+ * - The allow-list phrases other than "master bedroom": the spec attributes them to HUD's guidance; not verified.
+ * - The flagged phrases: not from a HUD list at all (see above).
+ * A human should compare the list with HUD's own text, and extend it, before the app is shown as a compliance aid.
  *
  * Deliberately left OUT, because no source could be pointed to and the false-positive cost is high:
  * - single words of any kind (a single word is too often ordinary copy, and none could be sourced), for example
@@ -52,8 +67,8 @@ export const SOURCES: Record<SourceKey, { doc: string; cite: string }> = {
     cite: "paragraph (c)(1): using words, phrases, photographs, illustrations, symbols or forms which convey that dwellings are available or not available to a particular group of persons because of a protected class",
   },
   HUD_1995: {
-    doc: "HUD, Guidance Regarding Advertisements under Section 804(c) of the Fair Housing Act (FHEO memorandum, 1995)",
-    cite: "examples of words and phrases by category; also the phrases it treats as acceptable descriptions of the property",
+    doc: "HUD, Guidance Regarding Advertisements under Section 804(c) of the Fair Housing Act (Achtenberg memorandum, 9 January 1995). QUOTED FROM A SECONDARY SOURCE, not from HUD's text",
+    cite: "facially neutral terms such as \"master bedroom\", \"rare find\" and \"desirable neighborhood\" should not be the basis of complaints; \"mother-in-law suite\" and \"bachelor apartment\" do not violate the Act",
   },
   SPEC_ATTRIBUTION: {
     doc: "ai-dev-os specs/14-real-estate.md, 'AI feature', Fair housing",
@@ -62,8 +77,14 @@ export const SOURCES: Record<SourceKey, { doc: string; cite: string }> = {
 };
 
 export const SOURCE_VERIFICATION = {
+  /** HUD's own 1995 memo text: not read by anyone on this project. The memo is quoted from a secondary source. */
   checkedAgainstPrimaryText: false,
-  reason: "hud.gov, ecfr.gov and govinfo.gov were blocked by the build sandbox's egress policy",
+  hud1995MemoSource: "secondary (a published fair-housing publisher's guide)",
+  /** 61 FR 14378 (1 April 1996) removed 24 CFR Part 109, HUD's word list. Read directly in the Federal Register document by the coordinator. */
+  part109RemovalVerifiedInFederalRegister: true,
+  /** No current HUD-published list of forbidden words exists, so the flagged phrases are the builder's selection. */
+  flaggedPhrasesAreFromAHudList: false,
+  reason: "hud.gov, ecfr.gov and govinfo.gov were blocked from the build sandbox; HUD's own memo text was not read by anyone here",
 } as const;
 
 export type FlaggedTerm = { phrase: string; category: Category; sources: readonly SourceKey[] };
@@ -110,8 +131,9 @@ export type AllowedPhrase = { phrase: string; sources: readonly SourceKey[] };
 
 /**
  * Phrases masked out BEFORE the flagged terms are matched, so a flagged term that happens to sit inside an ordinary
- * phrase does not refuse ordinary copy. The spec names these six as accepted by HUD's guidance. The attribution is the
- * spec's; the HUD text was not checked (see `SOURCE_VERIFICATION`). "walk-in closet" contains no protected-class
+ * phrase does not refuse ordinary copy. The spec names these six as accepted by HUD's guidance. Only "master bedroom" is
+ * named in the 1995 memo as reported by the secondary source; the rest are the spec's attribution. HUD's text was not
+ * checked (see `SOURCE_VERIFICATION`). "walk-in closet" contains no protected-class
  * word; it is here because the issue names it as a phrase that must be accepted.
  *
  * With today's flagged list none of these phrases overlaps a flagged term, so the mask changes no result yet. It is
@@ -119,10 +141,10 @@ export type AllowedPhrase = { phrase: string; sources: readonly SourceKey[] };
  * refusing "family room".
  */
 export const ALLOWED_PHRASES: readonly AllowedPhrase[] = [
-  { phrase: "family room", sources: ["SPEC_ATTRIBUTION", "HUD_1995"] },
+  { phrase: "family room", sources: ["SPEC_ATTRIBUTION"] },
   { phrase: "walk-in closet", sources: ["SPEC_ATTRIBUTION"] },
-  { phrase: "master bedroom", sources: ["SPEC_ATTRIBUTION", "HUD_1995"] },
-  { phrase: "great view", sources: ["SPEC_ATTRIBUTION", "HUD_1995"] },
-  { phrase: "walking distance", sources: ["SPEC_ATTRIBUTION", "HUD_1995"] },
-  { phrase: "jogging trails", sources: ["SPEC_ATTRIBUTION", "HUD_1995"] },
+  { phrase: "master bedroom", sources: ["HUD_1995", "SPEC_ATTRIBUTION"] },
+  { phrase: "great view", sources: ["SPEC_ATTRIBUTION"] },
+  { phrase: "walking distance", sources: ["SPEC_ATTRIBUTION"] },
+  { phrase: "jogging trails", sources: ["SPEC_ATTRIBUTION"] },
 ];

@@ -49,8 +49,22 @@ describe("fair-housing term data", () => {
       for (const s of e.sources) expect(SOURCES[s], `${e.phrase}: ${s}`).toBeDefined();
     }
   });
-  it("states plainly that the phrases were not checked against the primary text", () => {
+  it("keeps the confidence levels apart: HUD's text unread, the Part 109 removal read, no HUD list behind the phrases", () => {
     expect(SOURCE_VERIFICATION.checkedAgainstPrimaryText).toBe(false);
+    expect(SOURCE_VERIFICATION.hud1995MemoSource).toMatch(/secondary/);
+    expect(SOURCE_VERIFICATION.part109RemovalVerifiedInFederalRegister).toBe(true);
+    expect(SOURCE_VERIFICATION.flaggedPhrasesAreFromAHudList).toBe(false);
+    expect(SOURCES.HUD_1995.doc).toMatch(/SECONDARY SOURCE/);
+  });
+  it("never cites the removed 24 CFR Part 109 as an authority", () => {
+    for (const s of Object.values(SOURCES)) expect(`${s.doc} ${s.cite}`).not.toMatch(/109\.20|Part 109/);
+  });
+  it("only master bedroom is tied to the 1995 memo; the other allow-list entries rest on the spec's attribution", () => {
+    for (const a of ALLOWED_PHRASES) expect(a.sources.includes("HUD_1995"), a.phrase).toBe(a.phrase === "master bedroom");
+  });
+  it("does not flag bare 'master' or 'master bedroom' (HUD guidance protects it)", () => {
+    expect(FLAGGED_TERMS.some((t) => /\bmaster\b/.test(t.phrase))).toBe(false);
+    expect(findFairHousingTerms("Master bedroom with a mother-in-law suite and a bachelor apartment nearby")).toEqual([]);
   });
   it("has no flagged phrase that is a single common word", () => {
     for (const t of FLAGGED_TERMS) expect(t.phrase.split(/\s+/).length, t.phrase).toBeGreaterThanOrEqual(2);
