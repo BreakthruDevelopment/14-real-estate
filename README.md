@@ -388,3 +388,12 @@ placed before the name in the note but after it in the stored address, and stree
   list (24 CFR Part 109) in 1996, so the phrases are selected from the Fair Housing Act's seven protected classes
   (`src/lib/fair-housing-terms.ts` records the sources and what was and was not verified). It misses wording it has no
   phrase for, and ordinary terms such as "family room", "walk-in closet" and "master bedroom" are accepted.
+
+## Data credits
+
+ZIP code centroids (`data/zcta-centroids.csv.gz`, served at `GET /api/geo/zip/[zip]` and used for radius search) are
+derived from [GeoNames](https://www.geonames.org) postal code data, compiled by Midwire Technologies, LLC
+([midwire/free_zipcode_data](https://github.com/midwire/free_zipcode_data)), and used under the
+[Creative Commons Attribution 3.0 Unported](https://creativecommons.org/licenses/by/3.0/) licence. We filtered and
+reformatted it; see [`data/README.md`](data/README.md) for the changes, checksums and rebuild script. The locations are
+approximate ZIP-area centres.

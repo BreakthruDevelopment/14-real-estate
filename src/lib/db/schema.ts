@@ -228,7 +228,7 @@ export const photoBlob = pgTable(
   ],
 );
 
-/** US Census ZCTA centroids, loaded once by the 14.3 loader. Public. */
+/** Approximate ZIP-code centroids (USPS ZIPs, GeoNames-derived data, CC BY 3.0; see data/README.md), loaded once by the 14.3 loader. Public. */
 export const zipCentroid = pgTable(
   "zip_centroid",
   {

@@ -164,6 +164,14 @@ code=$(status -X PATCH -b "$JAR_AGENT" -H 'content-type: application/json' -H "o
 [ "$code" = "422" ] || fail "publishing without a photo should be 422, got $code"
 pass "stale version is 409; publishing without a photo is refused"
 
+# --- ZIP centroids (14.3) ---
+zip_json=$(curl -fsS "$BASE_URL/api/geo/zip/78704") || fail "GET /api/geo/zip/78704 failed (centroids not loaded?)"
+echo "$zip_json" | grep -q '"zip":"78704"' || fail "unexpected ZIP answer: $zip_json"
+echo "$zip_json" | grep -Eq '"lat":30\.2[0-9]*' || fail "78704 should be near latitude 30.24: $zip_json"
+[ "$(status "$BASE_URL/api/geo/zip/00000")" = "404" ] || fail "an unknown ZIP should be 404"
+[ "$(status "$BASE_URL/api/geo/zip/abcde")" = "404" ] || fail "a malformed ZIP should be 404"
+pass "ZIP centroid lookup"
+
 # --- Photos (14.4): the upload boundary and the /img route ---
 PHOTO=test/fixtures/images/exif-gps.jpg   # a real JPEG that carries GPS EXIF
 [ -f "$PHOTO" ] || fail "missing fixture $PHOTO (run from the repo root)"
@@ -209,8 +217,11 @@ curl -s -b "$JAR_AGENT" "$BASE_URL/img/$photo/lg" | grep -aq -e 'Exif' -e 'GPS' 
 [ "$(status "$BASE_URL/img/not-a-uuid/md")" = "404" ] || fail "a malformed photo id should be 404"
 pass "the draft's photo is the agent's alone, private and EXIF-free"
 
-# Publish needs a photo, a description of 200+ characters and a location. Typed coordinates work whether or not the
-# ZIP centroid table is loaded (that is a later slice); `confirmFar` covers the no-centroid case.
+# Publish needs a photo, a description of 200+ characters and a location. `confirmFar: true` is a 200 either way,
+# because it satisfies both branches that ask for it: no centroid for the ZIP (`listings.ts:361`) and coordinates
+# more than 5 mi from one (`:368`). Which branch runs changed when 14.3 loaded the centroid table -- these
+# coordinates are inside 78704, so neither fires now and the flag is a no-op here. That means **smoke no longer
+# covers the no-centroid branch**; it is covered by the integration tests, and #25 owns widening smoke.
 code=$(status -X POST -b "$JAR_AGENT" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"source":"manual","version":2,"lat":30.24235,"lng":-97.76899,"confirmFar":true}' "$BASE_URL/api/agent/listings/$id/location")
 [ "$code" = "200" ] || fail "setting the location should be 200, got $code"
 desc=$(printf 'A%.0s' $(seq 1 220))
